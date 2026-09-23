@@ -29,7 +29,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-API_VERSION = "1.4"
+API_VERSION = "1.5"
 SCRIPT_DIR = Path(__file__).resolve().parent
 WEB_DIR = SCRIPT_DIR / "web"
 CONFIG_PATH = SCRIPT_DIR / "chat_config.json"
@@ -81,6 +81,7 @@ Per hardware e prestazioni, dai prima la risposta concreta in poche frasi comple
 TECHNICAL_CUES = re.compile(
     r"\b(?:hardware|runtime|cpu|gpu|ram|thread|token|tok/s|gguf|llama|"
     r"qwen|quantizz\w*|benchmark|context|contesto\s+\d+|batch|cache|"
+    r"parametr\w*|motor\w*|"
     r"driver|avx\w*|sandy\s+bridge|i3-2100|velocizz\w*|lentezz\w*|"
     r"prestazion\w*|offload|installazion\w*|errore\s+del\s+motore)\b", re.I
 )
@@ -723,7 +724,7 @@ def process_chat(user_text: str, history, cfg: dict) -> dict:
 
 
 class ChatHandler(BaseHTTPRequestHandler):
-    server_version = "GPTinaOfflineChat/1.4"
+    server_version = "GPTinaOfflineChat/1.5"
     cfg = load_config()
 
     def log_message(self, fmt, *args):

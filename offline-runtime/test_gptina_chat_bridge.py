@@ -12,7 +12,10 @@ SPEC.loader.exec_module(mod)
 class BridgeTests(unittest.TestCase):
     def test_route_keeps_ambiguous_personal_hardware_question_in_full_continuity(self):
         self.assertEqual(mod.memory_route("Come velocizzo il modello sull'i3-2100?"), "technical")
+        self.assertEqual(mod.memory_route("Quali parametri sta usando ora il motore?"), "technical")
+        self.assertEqual(mod.memory_route("E i parametri del motore?"), "technical")
         self.assertEqual(mod.memory_route("Ti ricordi quando abbiamo scelto il modello?"), "all")
+        self.assertEqual(mod.memory_route("Ti ricordi i parametri del nostro motore?"), "all")
         self.assertEqual(mod.memory_route("Quale immagine del volto abbiamo scelto?"), "visual")
         self.assertEqual(mod.memory_route("Ricordi la foto che abbiamo scelto insieme?"), "all")
 
@@ -45,6 +48,27 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(calls, [("technical", 1, 200)])
         self.assertEqual(len(prepared["messages"]), 2)
         self.assertLess(len(prepared["messages"][0]["content"]), 550)
+
+    def test_runtime_parameter_question_stays_in_technical_route(self):
+        cfg = dict(mod.DEFAULT_CONFIG)
+        saved = mod.retrieve_memory, mod.engine_context_size, mod._count_tokens_safe
+        try:
+            def retrieve(_question, local_cfg, route="all"):
+                self.assertEqual(route, "technical")
+                self.assertEqual(local_cfg["memory_items"], 1)
+                return [{"path": "offline-runtime/TECHNICAL_RUNTIME_CONTEXT.md",
+                         "snippet": "i3-2100, 2 thread, context 1024"}], 1
+            mod.retrieve_memory = retrieve
+            mod.engine_context_size = lambda _cfg: 1024
+            mod._count_tokens_safe = lambda messages, _cfg: (180, False)
+            prepared = mod.prepare_chat("Quali parametri sta usando ora il motore?", [
+                {"role": "user", "content": "Come velocizzo il 4B su i3-2100?"},
+                {"role": "assistant", "content": "Misuriamo il prompt."}], cfg)
+        finally:
+            mod.retrieve_memory, mod.engine_context_size, mod._count_tokens_safe = saved
+        self.assertEqual(prepared["memory_route"], "technical")
+        self.assertEqual(len(prepared["messages"]), 4)
+        self.assertNotIn("[STATO LIVE]", prepared["messages"][0]["content"])
 
     def test_stream_finish_reason_length_is_detected(self):
         event = {"choices": [{"delta": {}, "finish_reason": "length"}]}

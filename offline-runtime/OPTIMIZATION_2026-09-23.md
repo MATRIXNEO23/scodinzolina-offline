@@ -36,3 +36,15 @@ Non applicare affinità/priorità, speculative decoding o offload GPU sulla base
 Alberto ha mostrato il 4B `Q4_K_M.gguf` sul suo i3-2100, 2 thread, context 1024, Max risposta 160. Motore/Memoria/Chat OK; route `technical` corretta e fonti soltanto tecniche. La domanda sull'ottimizzazione ha avuto **599/1024 token di prompt, 246,7 s al primo token, 2,4 prompt tok/s e 1,65 decode tok/s**. Il testo è finito a metà frase. Non è una baseline comparativa 2 vs 4 thread; è un'osservazione singola.
 
 Correzione candidata: system tecnico più corto, un solo frammento da 200 caratteri, e indicazione esplicita `finish_reason=length` nella chat. La stima locale conservativa passa da oltre 500 token per system+tre fonti+domanda a circa 239 con un solo frammento; questa è una stima, non una misura del tokenizer sul PC. La continuity autobiografica mantiene le impostazioni precedenti. Rifare il medesimo turno sul PC dopo l'aggiornamento per confrontare first-token e prompt token reali.
+### Test reale del 24 settembre: domanda di seguito sui parametri
+
+Con il runtime `d411de8`, la prima domanda tecnica è scesa da 599 a 213 token,
+e da 246,7 a 82,7 s al primo token; decode 2,02 tok/s. La domanda successiva
+«Quali parametri sta usando ora il motore?» nella stessa chat ha preso per errore
+il percorso autobiografico: prompt 720/1024, memoria 463 ms, primo token
+240092 ms, prompt 3,0 tok/s, decode 1,92 tok/s. Ha richiamato capsule e prompt
+di recovery e prodotto una risposta fuori tema. Questo secondo dato non misura
+il riuso della cache del percorso tecnico. La correzione include `motore` e
+`parametri` nei segnali tecnici, conservando la precedenza dei segnali personali.
+Rifare la seconda domanda dopo il riavvio del bridge aggiornato, annotando
+route, fonti, prompt, first-token, prompt/decode tok/s e limite risposta.
