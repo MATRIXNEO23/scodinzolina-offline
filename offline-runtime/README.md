@@ -1,97 +1,85 @@
-# GPTina Offline Runtime
+# GPTina Offline — launcher unico
 
-Runtime locale per usare la copia `scodinzolina-offline` come memoria di GPTina insieme a un modello GGUF caricato in KoboldCpp.
+Questa cartella contiene il runtime locale di GPTina.
 
-Tutto il runtime usa solo `127.0.0.1`. La continuity viene letta in **sola lettura**.
+Il percorso normale non richiede KoboldCpp: usa direttamente **llama.cpp** come motore GGUF CPU e avvia memoria + RAG + chat con un solo launcher.
 
-## Avvio normale
+## Uso
 
-1. Avvia KoboldCpp e carica il modello GGUF. Deve rispondere su `http://127.0.0.1:5001`.
-2. Fai doppio clic su:
+Dalla radice della repository:
 
-   `offline-runtime\start_gptina_chat.bat`
+1. chiudi KoboldCpp, se è aperto;
+2. fai doppio clic su `AVVIA_GPTINA_OFFLINE.bat`;
+3. la prima volta premi **Installa / aggiorna motore**;
+4. scegli il file `.gguf`;
+5. premi **AVVIA GPTINA**.
 
-Il launcher:
-- verifica/avvia automaticamente il memory runtime su porta **8765**;
-- avvia il bridge chat/RAG su porta **8766**;
-- apre la chat nel browser.
+L'app avvia:
 
-URL chat:
+- motore llama.cpp: `127.0.0.1:5001`;
+- memoria GPTina read-only: `127.0.0.1:8765`;
+- chat/RAG: `127.0.0.1:8766`;
+- browser direttamente sulla chat.
 
-`http://127.0.0.1:8766`
+## Profilo iniziale per l'i3-2100
 
-Non serve più copiare manualmente `/recover/current` dentro Qwen.
+Impostazioni conservative iniziali:
 
-## Come funziona
+- CPU only;
+- 2 thread;
+- context 1024;
+- output massimo 160 token;
+- batch 256;
+- micro-batch 128;
+- GPU layers 0;
+- Flash Attention off.
 
-Per ogni messaggio:
+Dopo il primo test confrontare 2 e 4 thread usando i token/sec reali.
 
-`Alberto → bridge → stato live + ricerca memoria → prompt compatto → KoboldCpp/Qwen → risposta`
+## Motore
 
-Il bridge non carica tutta la repository nel prompt. Recupera:
-- il summary del live context;
-- la prossima azione;
-- pochi frammenti pertinenti ricavati dalla domanda corrente;
-- una piccola finestra degli ultimi messaggi della chat.
+Il workflow `.github/workflows/build-gptina-sandybridge-engine.yml` costruisce un `llama-server.exe` CPU x64 da una versione di llama.cpp fissata.
 
-Questo è intenzionalmente conservativo per funzionare anche con context size ridotte.
+La build è mirata a **Sandy Bridge**: SSE4.2 + AVX, con AVX2/FMA/F16C disattivati, così l'eseguibile resta compatibile con l'i3-2100.
 
-## File
+Su `main` il workflow pubblica il pacchetto:
 
-- `gptina_memory_server.py` — accesso read-only alla continuity.
-- `gptina_chat_bridge.py` — RAG automatico + chiamata a KoboldCpp.
-- `chat_config.json` — parametri modificabili senza toccare il codice.
-- `start_gptina_memory.bat` — avvia solo la memoria.
-- `start_gptina_chat.bat` — avvio normale della chat.
-- `web/index.html` — interfaccia chat locale.
+`gptina-llama-sandybridge-engine.zip`
 
-## Porte
+nella release:
 
-- KoboldCpp: `127.0.0.1:5001`
-- GPTina Memory: `127.0.0.1:8765`
-- GPTina Chat: `127.0.0.1:8766`
+`gptina-engine-v1`
 
-## Sicurezza
+Il pulsante **Installa / aggiorna motore** lo scarica e lo estrae in:
 
-La memoria resta read-only:
-- nessuna API Git nel runtime;
-- nessun commit/push;
+`offline-runtime\engine\`
+
+## Memoria
+
+La continuity resta in sola lettura:
+
+- nessun commit o push dal runtime;
 - nessuna scrittura nella continuity;
-- nessun accesso fuori dalla repository tramite il memory server;
-- binding esclusivamente localhost.
+- nessun accesso automatico alla repository canonica;
+- servizi esposti solo su localhost.
 
-La repository canonica `MATRIXNEO23/scodinzolina-conntinuity` non viene modificata né sincronizzata automaticamente.
+La canonica `MATRIXNEO23/scodinzolina-conntinuity` non viene modificata.
 
-## KoboldCpp
+## File principali
 
-Il bridge usa l'endpoint OpenAI-compatible:
+- `gptina_offline_app.pyw` — launcher grafico;
+- `install_llama_engine.py` — installazione del motore;
+- `gptina_memory_server.py` — memoria read-only;
+- `gptina_chat_bridge.py` — retrieval + chat;
+- `web/index.html` — interfaccia chat;
+- `chat_config.json` — limiti del prompt/RAG.
 
-`POST http://127.0.0.1:5001/v1/chat/completions`
+## Log
 
-Con Qwen Instruct è consigliato lasciare attivo il template/Jinja di KoboldCpp.
+In caso di errore:
 
-## Configurazione
+- `offline-runtime\logs\engine.log`
+- `offline-runtime\logs\memory.log`
+- `offline-runtime\logs\chat.log`
 
-`chat_config.json` contiene i parametri principali. I valori iniziali sono prudenti per il PC corrente:
-- max output: 220 token;
-- 4 messaggi recenti al massimo;
-- massimo 4 frammenti memoria;
-- prompt di memoria compatto.
-
-Se il modello scelto è più veloce e il context viene aumentato, questi limiti possono essere alzati in seguito.
-
-## Diagnostica
-
-Memory:
-
-`http://127.0.0.1:8765/health`
-
-Chat bridge:
-
-`http://127.0.0.1:8766/health`
-
-Stato congiunto memoria + KoboldCpp:
-
-`http://127.0.0.1:8766/status`
-
-Se la UI mostra **memoria OK** e **Qwen OK**, il percorso automatico è operativo.
+La compatibilità KoboldCpp resta soltanto come fallback nel bridge, ma non è più il percorso normale.
