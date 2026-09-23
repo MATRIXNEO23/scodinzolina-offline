@@ -29,7 +29,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-API_VERSION = "1.3"
+API_VERSION = "1.4"
 SCRIPT_DIR = Path(__file__).resolve().parent
 WEB_DIR = SCRIPT_DIR / "web"
 CONFIG_PATH = SCRIPT_DIR / "chat_config.json"
@@ -71,6 +71,11 @@ Distingui presente, storico, superseded e incerto. Non trasformare memoria altru
 La memoria locale è in sola lettura: non dichiarare di aver salvato, modificato o sincronizzato file.
 Rispondi in italiano naturale e diretto. Mantieni il filo relazionale quando è supportato dalle fonti, senza imitare meccanicamente frasi o tic.
 Se il contesto recuperato è irrilevante per la domanda, ignoralo.
+"""
+
+TECHNICAL_SYSTEM = """Sei GPTina Offline. Rispondi in italiano con fatti tecnici verificati dal contesto e dalla domanda.
+La memoria locale è in sola lettura: non inventare misure né dichiarare salvataggi.
+Per hardware e prestazioni, dai prima la risposta concreta in poche frasi complete. Se servono prove sul PC, dillo.
 """
 
 TECHNICAL_CUES = re.compile(
@@ -373,8 +378,9 @@ def compact_memory(items: list[dict], cfg: dict) -> str:
 
 def build_system_prompt(live: dict, memories: list[dict], cfg: dict) -> str:
     if cfg.get("memory_route") == "technical":
-        # Constant prefix across hardware turns; live personal state is unrelated.
-        return BASE_SYSTEM + "\n[CONTESTO TECNICO]\n" + compact_memory(memories, cfg)
+        # Keep identity and read-only boundary while avoiding hundreds of
+        # unrelated tokens on a CPU with ~2.4 prompt tokens/s.
+        return TECHNICAL_SYSTEM + "\n[CONTESTO TECNICO]\n" + compact_memory(memories, cfg)
     live_text = (
         f"aggiornato: {live.get('updated_at') or 'n/d'}\n"
         f"stato: {_truncate(live.get('latest_summary'), 520) or 'n/d'}\n"
@@ -544,10 +550,12 @@ def prepare_chat(user_text: str, history, cfg: dict) -> dict:
     started = time.perf_counter()
     route = memory_route(user_text)
     live = {} if route == "technical" else fetch_live_summary(cfg)
-    memories, memory_ms = retrieve_memory(user_text, cfg, route=route)
+    route_cfg = (dict(cfg, memory_items=1, memory_snippet_chars=200)
+                 if route == "technical" else cfg)
+    memories, memory_ms = retrieve_memory(user_text, route_cfg, route=route)
     n_ctx = engine_context_size(cfg)
 
-    cfg = dict(cfg, memory_route=route)
+    cfg = dict(route_cfg, memory_route=route)
     if route == "technical":
         # Only the immediately preceding technical exchange can help this turn.
         recent = history[-2:] if isinstance(history, list) else []
@@ -619,6 +627,7 @@ def call_engine(messages: list[dict], cfg: dict) -> tuple[str, dict]:
     return text, {
         "timings": data.get("timings"),
         "usage": data.get("usage"),
+        "finish_reason": data["choices"][0].get("finish_reason"),
     }
 
 
@@ -714,7 +723,7 @@ def process_chat(user_text: str, history, cfg: dict) -> dict:
 
 
 class ChatHandler(BaseHTTPRequestHandler):
-    server_version = "GPTinaOfflineChat/1.3"
+    server_version = "GPTinaOfflineChat/1.4"
     cfg = load_config()
 
     def log_message(self, fmt, *args):
@@ -825,6 +834,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             first_token_ms = None
             timings = None
             usage = None
+            finish_reason = None
             reasoning_chars = 0
             content_chars = 0
 
@@ -834,6 +844,8 @@ class ChatHandler(BaseHTTPRequestHandler):
                         timings = event.get("timings")
                     if event.get("usage"):
                         usage = event.get("usage")
+                    if event.get("finish_reason"):
+                        finish_reason = event["finish_reason"]
                     reasoning_chars += int(event.get("reasoning_chars", 0))
 
                     token = event.get("content")
@@ -861,6 +873,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "elapsed_ms": int((time.perf_counter() - started) * 1000),
                 "timings": timings,
                 "usage": usage,
+                "finish_reason": finish_reason,
                 "reasoning_chars_hidden": reasoning_chars,
             })
 

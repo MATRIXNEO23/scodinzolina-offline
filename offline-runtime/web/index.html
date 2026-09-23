@@ -112,6 +112,7 @@ function metricText(meta,done){
     const t=done.timings||{};
     if(t.predicted_per_second!=null) bits.push(Number(t.predicted_per_second).toFixed(2)+' tok/s');
     if(t.prompt_per_second!=null) bits.push('prompt '+Number(t.prompt_per_second).toFixed(1)+' tok/s');
+    if(done.finish_reason==='length') bits.push('limite risposta raggiunto');
   }
   return bits.join(' · ');
 }
@@ -195,6 +196,9 @@ document.getElementById('form').addEventListener('submit',async ev=>{
     }
 
     metricsNode=addSmall('metrics',metricText(meta,doneMeta));
+    if(doneMeta && doneMeta.finish_reason==='length'){
+      addSmall('metrics','La risposta ha raggiunto Max risposta ed è incompleta. Aumenta il limite nel launcher per una risposta più lunga.');
+    }
     history.push({role:'user',content:text},{role:'assistant',content:assistantText});
     while(history.length>8)history.shift();
 

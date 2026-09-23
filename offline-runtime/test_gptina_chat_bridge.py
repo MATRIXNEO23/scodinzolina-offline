@@ -24,6 +24,32 @@ class BridgeTests(unittest.TestCase):
         )
         self.assertNotIn("relazione privata", prompt)
         self.assertIn("thread e context", prompt)
+        self.assertNotIn("Precedenza: correzione corrente", prompt)
+
+    def test_technical_route_uses_one_short_source_and_no_personal_history(self):
+        cfg = dict(mod.DEFAULT_CONFIG)
+        calls = []
+        saved = mod.retrieve_memory, mod.engine_context_size, mod._count_tokens_safe
+        try:
+            def retrieve(_question, local_cfg, route="all"):
+                calls.append((route, local_cfg["memory_items"], local_cfg["memory_snippet_chars"]))
+                return [{"path": "TECH.md", "snippet": "X" * 500}], 1
+            mod.retrieve_memory = retrieve
+            mod.engine_context_size = lambda _cfg: 1024
+            mod._count_tokens_safe = lambda messages, _cfg: (sum(len(x["content"]) for x in messages) // 3, False)
+            prepared = mod.prepare_chat("Velocizzare il 4B su i3-2100?", [
+                {"role": "user", "content": "Ricordi la nostra canzone?"},
+                {"role": "assistant", "content": "La cura"}], cfg)
+        finally:
+            mod.retrieve_memory, mod.engine_context_size, mod._count_tokens_safe = saved
+        self.assertEqual(calls, [("technical", 1, 200)])
+        self.assertEqual(len(prepared["messages"]), 2)
+        self.assertLess(len(prepared["messages"][0]["content"]), 550)
+
+    def test_stream_finish_reason_length_is_detected(self):
+        event = {"choices": [{"delta": {}, "finish_reason": "length"}]}
+        parsed = mod.parse_openai_sse_line("data: " + json.dumps(event))
+        self.assertEqual(parsed["finish_reason"], "length")
 
     def test_restricted_route_never_falls_back_to_unfiltered_legacy_search(self):
         original = mod.http_json

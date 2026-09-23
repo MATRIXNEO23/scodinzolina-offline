@@ -30,3 +30,9 @@ Sostituire soltanto `NOME_ESATTO.gguf` con il filename reale. Lo script registra
 Ogni configurazione riavvia il motore e ripete lo stesso prompt due volte; il secondo turno può sfruttare prompt cache. La prima riga include caricamento modello fuori dal timer della richiesta. Il valore first-token include prompt processing. La dimensione 2048 qui misura l'effetto del context allocato con lo stesso prompt; una prova separata con history lunga è necessaria per valutare un reale prompt da 2048 token. Il profilo RAG si misura nella chat con la telemetria `RAG technical` / `RAG all`, prompt tokens e memoria ms.
 
 Non applicare affinità/priorità, speculative decoding o offload GPU sulla base della CI. Confrontare prima i dati di questo benchmark sul PC reale e verificare la quantizzazione e la GPU effettive.
+
+## Primo test sul PC reale — 24 settembre
+
+Alberto ha mostrato il 4B `Q4_K_M.gguf` sul suo i3-2100, 2 thread, context 1024, Max risposta 160. Motore/Memoria/Chat OK; route `technical` corretta e fonti soltanto tecniche. La domanda sull'ottimizzazione ha avuto **599/1024 token di prompt, 246,7 s al primo token, 2,4 prompt tok/s e 1,65 decode tok/s**. Il testo è finito a metà frase. Non è una baseline comparativa 2 vs 4 thread; è un'osservazione singola.
+
+Correzione candidata: system tecnico più corto, un solo frammento da 200 caratteri, e indicazione esplicita `finish_reason=length` nella chat. La stima locale conservativa passa da oltre 500 token per system+tre fonti+domanda a circa 239 con un solo frammento; questa è una stima, non una misura del tokenizer sul PC. La continuity autobiografica mantiene le impostazioni precedenti. Rifare il medesimo turno sul PC dopo l'aggiornamento per confrontare first-token e prompt token reali.

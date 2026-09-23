@@ -4,7 +4,7 @@ Fonte del handoff: checkpoint canonico `checkpoints/2026-09-23-fine-istanza-offl
 
 - Target CPU: Intel Core i3-2100 @ 3.10 GHz, Sandy Bridge, 2 core fisici / 4 thread, SSE4.2 + AVX, senza AVX2; RAM 10 GB.
 - GPU e driver non identificati con certezza. Nessun GPU offload promesso.
-- Modello pesante di riferimento: `Unrestricted/Qwen3-4B-2507-Instruct-Uncensored-HauhauCS-Aggressive`. La quantizzazione del GGUF locale non è stata verificata.
-- Una versione locale precedente della chat su `127.0.0.1:8766` funzionava end-to-end; la versione auditata al commit `f2669ce40ce77cc891ae68b52d9dfa63342875de` non era ancora installata sul PC al momento del handoff.
+- Modello pesante di riferimento: `Unrestricted/Qwen3-4B-2507-Instruct-Uncensored-HauhauCS-Aggressive`. Nel test mostrato da Alberto il file caricato termina in `Q4_K_M.gguf`; questa quantizzazione è ora verificata per quel file locale.
+- Test locale del runtime `c70f8f4` mostrato da Alberto il 24 settembre: motore, memoria e chat OK; RAG technical usa solo fonti tecniche. La prima domanda ha richiesto 599 token di prompt, 246,7 s al primo token, 2,4 prompt tok/s e 1,65 decode tok/s; la risposta era incompleta con Max risposta 160. Il motivo di arresto non era esposto.
 - Misurare sul PC reale: 2/4 thread, context 1024/2048, batch 128/256 e micro-batch 64/128; first-token latency, prompt tok/s, decode tok/s, CPU/RAM e confronto cache cold/warm.
 - Mantenere il modello pesante come target. Speculative decoding e priorità/affinità Windows richiedono una baseline; GPU offload richiede identificazione di GPU e driver.
