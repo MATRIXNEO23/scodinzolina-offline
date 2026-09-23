@@ -30,7 +30,8 @@ jobs:
       - name: Configure CPU multi-variant build
         shell: pwsh
         run: |
-          cmake -S _llama -B _llama/build -G "Visual Studio 17 2022" -A x64 `
+          cmake -S _llama -B _llama/build -G "Ninja Multi-Config" `
+            -D CMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake `
             -DGGML_NATIVE=OFF `
             -DGGML_BACKEND_DL=ON `
             -DGGML_CPU_ALL_VARIANTS=ON `
