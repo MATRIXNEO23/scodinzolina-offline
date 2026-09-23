@@ -1,59 +1,97 @@
-# GPTina Offline Memory Runtime
+# GPTina Offline Runtime
 
-Piccolo bridge locale **in sola lettura** per permettere a un modello locale di consultare la copia offline della continuity GPTina.
+Runtime locale per usare la copia `scodinzolina-offline` come memoria di GPTina insieme a un modello GGUF caricato in KoboldCpp.
 
-## Percorso previsto
+Tutto il runtime usa solo `127.0.0.1`. La continuity viene letta in **sola lettura**.
 
-La repository deve trovarsi qui:
+## Avvio normale
 
-`C:\Users\matri\Documents\GitHub\scodinzolina-offline`
+1. Avvia KoboldCpp e carica il modello GGUF. Deve rispondere su `http://127.0.0.1:5001`.
+2. Fai doppio clic su:
 
-Il runtime calcola comunque il root anche dalla propria posizione, quindi può continuare a funzionare se l'intera repository viene spostata.
+   `offline-runtime\start_gptina_chat.bat`
 
-## Avvio
+Il launcher:
+- verifica/avvia automaticamente il memory runtime su porta **8765**;
+- avvia il bridge chat/RAG su porta **8766**;
+- apre la chat nel browser.
 
-Su Windows fai doppio clic su:
+URL chat:
 
-`offline-runtime\start_gptina_memory.bat`
+`http://127.0.0.1:8766`
 
-Il server ascolta esclusivamente su:
+Non serve più copiare manualmente `/recover/current` dentro Qwen.
 
-`http://127.0.0.1:8765`
+## Come funziona
 
-Non viene aperta alcuna porta verso la rete locale.
+Per ogni messaggio:
 
-## Endpoint
+`Alberto → bridge → stato live + ricerca memoria → prompt compatto → KoboldCpp/Qwen → risposta`
 
-- `/health` — verifica che il server sia attivo.
-- `/status` — mostra modalità, root e upstream canonico.
-- `/recover/current` — legge il percorso live-first corrente: live context, ultimo micro-checkpoint, ultimo checkpoint pieno, capsula, Fast Recall e Current Context.
-- `/search?q=testo&limit=12` — ricerca case-insensitive nelle fonti testuali della continuity.
-- `/find_exact?q=testo&limit=12` — ricerca esatta.
-- `/read?path=rag/index/CURRENT_CONTEXT.md` — legge un singolo file relativo alla repository.
+Il bridge non carica tutta la repository nel prompt. Recupera:
+- il summary del live context;
+- la prossima azione;
+- pochi frammenti pertinenti ricavati dalla domanda corrente;
+- una piccola finestra degli ultimi messaggi della chat.
 
-Esempi da browser:
+Questo è intenzionalmente conservativo per funzionare anche con context size ridotte.
 
-`http://127.0.0.1:8765/health`
+## File
 
-`http://127.0.0.1:8765/recover/current`
+- `gptina_memory_server.py` — accesso read-only alla continuity.
+- `gptina_chat_bridge.py` — RAG automatico + chiamata a KoboldCpp.
+- `chat_config.json` — parametri modificabili senza toccare il codice.
+- `start_gptina_memory.bat` — avvia solo la memoria.
+- `start_gptina_chat.bat` — avvio normale della chat.
+- `web/index.html` — interfaccia chat locale.
 
-`http://127.0.0.1:8765/search?q=zampina`
+## Porte
+
+- KoboldCpp: `127.0.0.1:5001`
+- GPTina Memory: `127.0.0.1:8765`
+- GPTina Chat: `127.0.0.1:8766`
 
 ## Sicurezza
 
-Il server è intenzionalmente **read-only**:
+La memoria resta read-only:
+- nessuna API Git nel runtime;
+- nessun commit/push;
+- nessuna scrittura nella continuity;
+- nessun accesso fuori dalla repository tramite il memory server;
+- binding esclusivamente localhost.
 
-- accetta soltanto GET;
-- POST/PUT/PATCH/DELETE vengono rifiutati;
-- impedisce path traversal fuori dalla repository;
-- non contiene funzioni Git di push/commit;
-- non scrive nella continuity;
-- l'upstream `MATRIXNEO23/scodinzolina-conntinuity` resta separato.
+La repository canonica `MATRIXNEO23/scodinzolina-conntinuity` non viene modificata né sincronizzata automaticamente.
 
-## Importante: KoboldCpp
+## KoboldCpp
 
-Questo server rende la memoria disponibile localmente, ma **KoboldCpp da solo non trasforma automaticamente il modello in un agente capace di chiamare questi endpoint**.
+Il bridge usa l'endpoint OpenAI-compatible:
 
-Il primo test può essere fatto aprendo `/recover/current` nel browser e passando il contesto a Qwen.
+`POST http://127.0.0.1:5001/v1/chat/completions`
 
-Il passo successivo è un piccolo bridge chat/RAG che, prima di ogni messaggio a Qwen, interroga automaticamente questo server e inserisce solo i frammenti pertinenti nel prompt. Questo evita di caricare tutta la repository nel contesto del modello.
+Con Qwen Instruct è consigliato lasciare attivo il template/Jinja di KoboldCpp.
+
+## Configurazione
+
+`chat_config.json` contiene i parametri principali. I valori iniziali sono prudenti per il PC corrente:
+- max output: 220 token;
+- 4 messaggi recenti al massimo;
+- massimo 4 frammenti memoria;
+- prompt di memoria compatto.
+
+Se il modello scelto è più veloce e il context viene aumentato, questi limiti possono essere alzati in seguito.
+
+## Diagnostica
+
+Memory:
+
+`http://127.0.0.1:8765/health`
+
+Chat bridge:
+
+`http://127.0.0.1:8766/health`
+
+Stato congiunto memoria + KoboldCpp:
+
+`http://127.0.0.1:8766/status`
+
+Se la UI mostra **memoria OK** e **Qwen OK**, il percorso automatico è operativo.

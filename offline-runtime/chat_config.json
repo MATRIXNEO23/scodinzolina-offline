@@ -1,0 +1,14 @@
+{
+  "memory_base": "http://127.0.0.1:8765",
+  "kobold_base": "http://127.0.0.1:5001",
+  "chat_host": "127.0.0.1",
+  "chat_port": 8766,
+  "model": "koboldcpp",
+  "max_tokens": 220,
+  "temperature": 0.72,
+  "top_p": 0.9,
+  "history_messages": 4,
+  "history_chars": 2400,
+  "memory_items": 4,
+  "memory_snippet_chars": 360
+}

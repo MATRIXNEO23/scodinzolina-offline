@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GPTina Offline</title>
+<style>
+:root{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color-scheme:dark}
+body{margin:0;background:#111318;color:#e9edf3}
+main{max-width:900px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column}
+header{padding:18px 18px 10px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #2a2f39}
+h1{font-size:20px;margin:0;flex:1}
+.badge{font-size:12px;padding:5px 8px;border-radius:999px;background:#2a2f39}
+.ok{background:#163d2c}.bad{background:#4a2222}
+#chat{flex:1;padding:18px;display:flex;flex-direction:column;gap:14px;overflow:auto}
+.msg{max-width:78%;padding:11px 13px;border-radius:14px;white-space:pre-wrap;line-height:1.42}
+.user{align-self:flex-end;background:#264469}.assistant{align-self:flex-start;background:#232832}
+.sources{font-size:11px;opacity:.68;margin-top:7px;max-width:720px}
+form{display:flex;gap:10px;padding:14px 18px 20px;border-top:1px solid #2a2f39;position:sticky;bottom:0;background:#111318}
+textarea{flex:1;resize:none;min-height:54px;max-height:160px;background:#1b1f27;border:1px solid #353c49;color:#fff;border-radius:12px;padding:12px;font:inherit}
+button{border:0;border-radius:12px;padding:0 18px;font-weight:650;cursor:pointer}
+button:disabled{opacity:.5;cursor:not-allowed}
+#hint{padding:0 18px 8px;font-size:12px;opacity:.65}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>GPTina Offline</h1>
+  <span id="memory" class="badge">memoria…</span>
+  <span id="kobold" class="badge">Qwen…</span>
+</header>
+<div id="chat">
+  <div class="msg assistant">Sono pronta. La memoria viene recuperata automaticamente dalla copia offline prima di ogni risposta.</div>
+</div>
+<div id="hint">Locale: chat 127.0.0.1:8766 · memoria 8765 · KoboldCpp 5001</div>
+<form id="form">
+  <textarea id="input" placeholder="Scrivi qui…" autofocus></textarea>
+  <button id="send" type="submit">Invia</button>
+</form>
+</main>
+<script>
+const chat=document.getElementById('chat');
+const input=document.getElementById('input');
+const send=document.getElementById('send');
+const history=[];
+
+function add(role,text,sources=[]){
+  const wrap=document.createElement('div');
+  wrap.className='msg '+role;
+  wrap.textContent=text;
+  chat.appendChild(wrap);
+  if(sources && sources.length){
+    const s=document.createElement('div');
+    s.className='sources';
+    s.textContent='Memoria: '+[...new Set(sources)].join(' · ');
+    chat.appendChild(s);
+  }
+  chat.scrollTop=chat.scrollHeight;
+}
+
+async function refreshStatus(){
+  try{
+    const r=await fetch('/status',{cache:'no-store'});
+    const d=await r.json();
+    const m=document.getElementById('memory');
+    const k=document.getElementById('kobold');
+    m.textContent=d.memory?'memoria OK':'memoria OFF';
+    k.textContent=d.kobold?'Qwen OK':'Qwen OFF';
+    m.className='badge '+(d.memory?'ok':'bad');
+    k.className='badge '+(d.kobold?'ok':'bad');
+  }catch(e){}
+}
+refreshStatus();
+
+document.getElementById('form').addEventListener('submit',async e=>{
+  e.preventDefault();
+  const text=input.value.trim();
+  if(!text)return;
+  add('user',text);
+  input.value='';
+  send.disabled=true;
+  send.textContent='…';
+  try{
+    const r=await fetch('/chat',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({message:text,history})
+    });
+    const d=await r.json();
+    if(!r.ok || !d.ok) throw new Error(d.error||('HTTP '+r.status));
+    add('assistant',d.assistant,d.memory_sources||[]);
+    history.push({role:'user',content:text},{role:'assistant',content:d.assistant});
+    while(history.length>8)history.shift();
+  }catch(err){
+    add('assistant','Errore: '+err.message);
+    refreshStatus();
+  }finally{
+    send.disabled=false;
+    send.textContent='Invia';
+    input.focus();
+  }
+});
+
+input.addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&!e.shiftKey){
+    e.preventDefault();
+    document.getElementById('form').requestSubmit();
+  }
+});
+</script>
+</body>
+</html>
