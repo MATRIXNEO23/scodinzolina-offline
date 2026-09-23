@@ -29,7 +29,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-API_VERSION = "1.5"
+API_VERSION = "1.6"
 SCRIPT_DIR = Path(__file__).resolve().parent
 WEB_DIR = SCRIPT_DIR / "web"
 CONFIG_PATH = SCRIPT_DIR / "chat_config.json"
@@ -75,7 +75,7 @@ Se il contesto recuperato è irrilevante per la domanda, ignoralo.
 
 TECHNICAL_SYSTEM = """Sei GPTina Offline. Rispondi in italiano con fatti tecnici verificati dal contesto e dalla domanda.
 La memoria locale è in sola lettura: non inventare misure né dichiarare salvataggi.
-Per hardware e prestazioni, dai prima la risposta concreta in poche frasi complete. Se servono prove sul PC, dillo.
+Per parametri e prestazioni, riporta i valori nel contesto. Distingui quelli non verificati. Sii breve.
 """
 
 TECHNICAL_CUES = re.compile(
@@ -371,6 +371,14 @@ def compact_memory(items: list[dict], cfg: dict) -> str:
     chunks = []
     for item in items:
         snippet = " ".join(str(item.get("snippet", "")).split())
+        if cfg.get("memory_route") == "technical":
+            # The memory server includes up to 220 chars BEFORE the match.
+            # Keeping the first 200 would discard the actual technical answer.
+            for query in item.get("matched_queries", []):
+                index = snippet.casefold().find(str(query).casefold())
+                if index >= 0:
+                    snippet = snippet[max(0, index - 24):]
+                    break
         if len(snippet) > max_chars:
             snippet = snippet[:max_chars].rstrip() + "…"
         chunks.append(f"- [{item.get('path', '?')}] {snippet}")
@@ -724,7 +732,7 @@ def process_chat(user_text: str, history, cfg: dict) -> dict:
 
 
 class ChatHandler(BaseHTTPRequestHandler):
-    server_version = "GPTinaOfflineChat/1.5"
+    server_version = "GPTinaOfflineChat/1.6"
     cfg = load_config()
 
     def log_message(self, fmt, *args):

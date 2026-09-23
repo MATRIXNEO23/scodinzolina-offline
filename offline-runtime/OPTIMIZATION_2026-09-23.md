@@ -48,3 +48,14 @@ il riuso della cache del percorso tecnico. La correzione include `motore` e
 `parametri` nei segnali tecnici, conservando la precedenza dei segnali personali.
 Rifare la seconda domanda dopo il riavvio del bridge aggiornato, annotando
 route, fonti, prompt, first-token, prompt/decode tok/s e limite risposta.
+### Terzo test reale: percorso corretto, finestra del frammento sbagliata
+
+Con `ab3c2ff` e app 1.3, la domanda «Quali parametri sta usando ora il motore?»
+ha usato il percorso `technical` e solo `TECHNICAL_RUNTIME_CONTEXT.md`: prompt
+203/1024, memoria 7 ms, preparazione 44 ms, primo token 55339 ms, prompt
+3,7 tok/s, decode 2,49 tok/s. La risposta ha descritto la CPU invece dei flag
+e ha raggiunto Max risposta. La ricerca ritornava fino a 220 caratteri prima
+del match; il bridge teneva solo i primi 200 caratteri, eliminando proprio
+il testo trovato. Ora la finestra tecnica comincia vicino al match e include
+i valori, con test di regressione. Questo test è una nuova sessione a freddo,
+non una misura della cache tra due turni.

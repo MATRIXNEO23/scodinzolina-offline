@@ -124,6 +124,17 @@ class BridgeTests(unittest.TestCase):
         text = mod.compact_memory([{"path": "a.md", "snippet": "123456789012345"}], cfg)
         self.assertIn("…", text)
 
+    def test_technical_memory_window_includes_matched_parameter_values(self):
+        cfg = dict(mod.DEFAULT_CONFIG, memory_route="technical", memory_snippet_chars=200)
+        snippet = "Earlier CPU description. " + "background " * 20 + (
+            "Parametri del motore: -t 2 -tb 2 -c 1024 -b 256 -ub 128 -ngl 0.")
+        result = mod.compact_memory([{
+            "path": "offline-runtime/TECHNICAL_RUNTIME_CONTEXT.md",
+            "snippet": snippet, "matched_queries": ["Parametri", "motore"],
+        }], cfg)
+        self.assertIn("-t 2 -tb 2 -c 1024 -b 256 -ub 128 -ngl 0", result)
+        self.assertNotIn("Earlier CPU description", result)
+
     def test_parse_stream_token(self):
         payload = {
             "choices": [{"delta": {"content": "ciao"}, "finish_reason": None}],
