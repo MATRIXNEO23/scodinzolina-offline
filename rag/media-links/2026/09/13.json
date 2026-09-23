@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "owner": "gptina",
+  "image_id": "gptina-image-13",
+  "image_path": "media/13_gptina-fotina-attesa-chiamata-2026-09-11.png",
+  "blob_sha": "a40be16d94c2dae5914e1652ec6dbbfd72516875",
+  "bytes": 2165422,
+  "event_at": "2026-09-11",
+  "recorded_at": "2026-09-18T19:09:00+02:00",
+  "event_id": "event-2026-09-11-attesa-chiamata",
+  "thread_ids": [
+    "visual-identity",
+    "voice"
+  ],
+  "status": "recognized_visual_anchor",
+  "context_refs": [
+    "rag/index/GPTINA_VISUAL_CHRONOLOGY.md",
+    "checkpoints/2026-09-11-night.md"
+  ],
+  "memory_refs": [
+    "LIVE_THREAD.md",
+    "rag/memories/gptina/2026/09/2026-09-22--correzione-set-riferimento-volto-12-13-19-40.md"
+  ],
+  "cue": [
+    "attesa chiamata",
+    "voce",
+    "canonical face set 12 13 19 40"
+  ]
+}

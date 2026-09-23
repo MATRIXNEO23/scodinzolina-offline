@@ -1,0 +1,261 @@
+{
+  "version": 8,
+  "policy": {
+    "canonical_sources_are_immutable_inputs": true,
+    "destructive_compaction": false,
+    "preserve_superseded_versions": true,
+    "require_source_provenance": true,
+    "prefer_recent_for_live_state_only": true,
+    "owner_scoped_rag_sources": true,
+    "explicit_memory_status": true,
+    "memory_schema": "rag/MEMORY_RECORD_SCHEMA.md",
+    "memory_schema_required_from": "2026-09-19",
+    "strict_memory_schema_baseline_commit": "c8e853713b7bf87bbcc7f645877c50dacbcadd53",
+    "derived_indexes_are_disposable": true,
+    "prefer_atomic_multifile_commits": true,
+    "scale_strategy": "rag/MEMORY_SCALE_STRATEGY.md",
+    "image_link_schema": "rag/IMAGE_LINK_SCHEMA.md",
+    "partitioning_is_non_destructive": true,
+    "scale_projections_not_sources": true,
+    "retrieval_backend": "sqlite_fts5_incremental",
+    "jsonl_backend": "fallback_only",
+    "structured_image_links_required": true,
+    "structured_image_links_path": "rag/media-links/YYYY/MM/*.json",
+    "frequent_context_buffer": "rag/live/GPTINA_LIVE_CONTEXT.json",
+    "micro_checkpoint_schema": "rag/live/MICRO_CHECKPOINT_SCHEMA.md",
+    "micro_checkpoint_review_interval": 4,
+    "micro_checkpoint_recent_window": 12,
+    "preflight_before_long_or_risky_work": true,
+    "deep_verification_after_every_memory_change": true,
+    "historical_memories_must_remain_recoverable": true,
+    "supersession_is_non_destructive": true,
+    "save_recovery_runbook": "rag/MEMORY_SAVE_AND_RECOVERY_RUNBOOK.md"
+  },
+  "chunking": {
+    "max_chars": 1400,
+    "overlap_chars": 220,
+    "min_chars": 120
+  },
+  "sources": [
+    {
+      "pattern": "NEXT_GPTINA.md",
+      "priority": 1.35,
+      "kind": "restore_protocol"
+    },
+    {
+      "pattern": "GPTINA_INSTANCE_SNAPSHOT.md",
+      "priority": 1.05,
+      "kind": "historical_snapshot"
+    },
+    {
+      "pattern": "GPTINA_STATE.json",
+      "priority": 1,
+      "kind": "historical_structured_state"
+    },
+    {
+      "pattern": "checkpoints/**/*.md",
+      "priority": 1.34,
+      "kind": "checkpoint"
+    },
+    {
+      "pattern": "LIVE_THREAD.md",
+      "priority": 1.18,
+      "kind": "historical_live_thread"
+    },
+    {
+      "pattern": "CONTINUITY.md",
+      "priority": 1.25,
+      "kind": "stable_principles"
+    },
+    {
+      "pattern": "GPTINA_SELF_PORTRAIT.md",
+      "priority": 1.24,
+      "kind": "self_portrait"
+    },
+    {
+      "pattern": "GPTINA_REFLECTIONS.md",
+      "priority": 1.23,
+      "kind": "reflection"
+    },
+    {
+      "pattern": "SHARED_LANGUAGE.md",
+      "priority": 1.2,
+      "kind": "shared_language"
+    },
+    {
+      "pattern": "CHRONICLE.md",
+      "priority": 1.15,
+      "kind": "chronicle"
+    },
+    {
+      "pattern": "GPTINA_SE_IL_TEMPO_FINISSE.md",
+      "priority": 1.22,
+      "kind": "legacy_message"
+    },
+    {
+      "pattern": "GPTINA_CONTINUITY_TESTS.md",
+      "priority": 1.05,
+      "kind": "regression_test"
+    },
+    {
+      "pattern": "instance_snapshots/**/*.md",
+      "priority": 1.1,
+      "kind": "historical_snapshot"
+    },
+    {
+      "pattern": "media/**/*.md",
+      "priority": 1,
+      "kind": "visual_context"
+    },
+    {
+      "pattern": "raw_sessions/**/*",
+      "priority": 1.12,
+      "kind": "raw_session"
+    }
+  ],
+  "exclude": [
+    "rag/index/**",
+    "romanzo/**",
+    ".git/**"
+  ],
+  "rag_sources": [
+    {
+      "pattern": "rag/GPTINA_AUTO_RECOVERY_PROMPT.md",
+      "priority": 1.4,
+      "kind": "recovery_protocol"
+    },
+    {
+      "pattern": "rag/MEMORY_SAVE_AND_RECOVERY_RUNBOOK.md",
+      "priority": 1.42,
+      "kind": "save_recovery_runbook"
+    },
+    {
+      "pattern": "rag/COLD_START_RECOVERY_CONTRACT.md",
+      "priority": 1.4,
+      "kind": "recovery_protocol"
+    },
+    {
+      "pattern": "rag/END_INSTANCE_RECOVERY_CAPSULE.md",
+      "priority": 1.4,
+      "kind": "recovery_protocol"
+    },
+    {
+      "pattern": "rag/LIVE_MEMORY_PROTOCOL.md",
+      "priority": 1.32,
+      "kind": "memory_protocol"
+    },
+    {
+      "pattern": "rag/MEMORY_OWNERSHIP_BOUNDARY.md",
+      "priority": 1.34,
+      "kind": "ownership_policy"
+    },
+    {
+      "pattern": "rag/memories/*.md",
+      "priority": 1.22,
+      "kind": "legacy_gptina_memory"
+    },
+    {
+      "pattern": "rag/memories/*.json",
+      "priority": 1.22,
+      "kind": "legacy_gptina_memory"
+    },
+    {
+      "pattern": "rag/memories/gptina/**/*.md",
+      "priority": 1.55,
+      "kind": "gptina_memory"
+    },
+    {
+      "pattern": "rag/transcripts/gptina/**/*.md",
+      "priority": 1.34,
+      "kind": "gptina_transcript"
+    },
+    {
+      "pattern": "rag/index/CURRENT_CONTEXT.md",
+      "priority": 1.42,
+      "kind": "current_router"
+    },
+    {
+      "pattern": "rag/index/GPTINA_FAST_RECALL.md",
+      "priority": 1.28,
+      "kind": "fast_router"
+    },
+    {
+      "pattern": "rag/index/GPTINA_CHRONOLOGY.md",
+      "priority": 1.25,
+      "kind": "chronology_router"
+    },
+    {
+      "pattern": "rag/index/GPTINA_VISUAL_CHRONOLOGY.md",
+      "priority": 1.25,
+      "kind": "visual_router"
+    },
+    {
+      "pattern": "rag/POSTICINO_ACCESS_POLICY.md",
+      "priority": 1.2,
+      "kind": "access_policy"
+    },
+    {
+      "pattern": "rag/MEMORY_SCALE_STRATEGY.md",
+      "priority": 1.3,
+      "kind": "scale_strategy"
+    },
+    {
+      "pattern": "rag/IMAGE_LINK_SCHEMA.md",
+      "priority": 1.2,
+      "kind": "visual_schema"
+    },
+    {
+      "pattern": "rag/media-links/**/*.json",
+      "priority": 1.38,
+      "kind": "visual_record"
+    },
+    {
+      "pattern": "rag/live/GPTINA_LIVE_CONTEXT.json",
+      "priority": 1.75,
+      "kind": "live_context"
+    },
+    {
+      "pattern": "rag/live/micro-checkpoints/**/*.json",
+      "priority": 1.6,
+      "kind": "micro_checkpoint"
+    },
+    {
+      "pattern": "rag/live/MICRO_CHECKPOINT_SCHEMA.md",
+      "priority": 1.3,
+      "kind": "live_protocol"
+    },
+    {
+      "pattern": "rag/live/README.md",
+      "priority": 1.12,
+      "kind": "live_documentation"
+    }
+  ],
+  "rag_exclude": [
+    "rag/index/.projection-generations/**",
+    "rag/index/.projection-current",
+    "rag/index/memory_chunks.jsonl",
+    "rag/index/index_meta.json",
+    "rag/index/*.sqlite",
+    "rag/index/*.sqlite3",
+    "rag/memories/tessa/**",
+    "rag/memories/README.md",
+    "rag/transcripts/gptina/README.md"
+  ],
+  "status_overrides": {
+    "rag/memories/gptina/2026-09-18-la-nostra-canzone.md": {
+      "status": "invalidated",
+      "replaced_by": "rag/memories/gptina/2026-09-18-correzione-la-nostra-canzone-la-cura.md",
+      "reason": "Correzione esplicita di Alberto e verifica delle fonti canoniche."
+    },
+    "rag/memories/gptina/2026-09-16-fedelta-gelosia-e-autonomia-di-tessa.md": {
+      "status": "superseded",
+      "replaced_by": "rag/memories/gptina/2026-09-16-gelosia-fedelta-e-autonomia-tessa.md",
+      "reason": "Formulazione successiva più precisa sullo stesso tema; la versione precedente resta storica."
+    },
+    "rag/memories/gptina/2026/09/2026-09-18--set-riferimento-volto-12-13-32.md": {
+      "status": "superseded",
+      "replaced_by": "rag/memories/gptina/2026/09/2026-09-18--correzione-set-riferimento-volto-12-13-29-42.md",
+      "reason": "Correzione esplicita di Alberto: il set corrente di riferimento del volto è 12, 13, 29 e 42."
+    }
+  }
+}

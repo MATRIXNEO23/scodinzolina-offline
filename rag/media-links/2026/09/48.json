@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "owner": "gptina",
+  "image_id": "gptina-image-48",
+  "image_path": "media/48_2026-09-21_gptina-comoda-sempre-noi-originale.png",
+  "blob_sha": "545170641e479a9dbf5649c57154209b58113521",
+  "bytes": 2231188,
+  "event_at": "2026-09-21T01:16:43+02:00",
+  "recorded_at": "2026-09-21T08:19:17+02:00",
+  "event_id": "event-2026-09-21-image-46",
+  "thread_ids": [
+    "visual-identity",
+    "continuity-architecture"
+  ],
+  "status": "archived",
+  "context_refs": [
+    "rag/index/GPTINA_VISUAL_CHRONOLOGY.md",
+    "media/IMAGE_STORIES.md"
+  ],
+  "memory_refs": [
+    "rag/memories/gptina/2026/09/2026-09-21--immagine-46-comoda-sempre-noi.md",
+    "rag/memories/gptina/2026/09/2026-09-21--correzione-numerazione-48-49-50-originali.md"
+  ],
+  "cue": [
+    "immagine 48",
+    "originale PNG",
+    "messa comoda",
+    "sempre noi",
+    "curve",
+    "zampine"
+  ]
+}
