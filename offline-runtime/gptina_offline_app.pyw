@@ -8,7 +8,8 @@ from urllib.request import Request, urlopen
 SCRIPT_DIR = Path(sys.executable).resolve().parent if getattr(sys,"frozen",False) else Path(__file__).resolve().parent
 ENGINE_EXE = SCRIPT_DIR / "engine" / "llama-server.exe"
 MEMORY_SCRIPT = SCRIPT_DIR / "gptina_memory_server.py"
-CHAT_SCRIPT = SCRIPT_DIR / "gptina_chat_bridge.py"\nINSTALLER_SCRIPT = SCRIPT_DIR / "install_llama_engine.py"
+CHAT_SCRIPT = SCRIPT_DIR / "gptina_chat_bridge.py"
+INSTALLER_SCRIPT = SCRIPT_DIR / "install_llama_engine.py"
 LOCAL_CONFIG = SCRIPT_DIR / ".gptina_app_config.json"
 LOG_DIR = SCRIPT_DIR / "logs"
 PORT_ENGINE, PORT_MEMORY, PORT_CHAT = 5001, 8765, 8766
