@@ -21,6 +21,7 @@ rag/__pycache__/
 # GPTina Offline local runtime
 offline-runtime/engine/
 offline-runtime/logs/
+offline-runtime/benchmarks/
 offline-runtime/.gptina_app_config.json
 offline-runtime/.gptina_runtime_config.json
 offline-runtime/GPTinaOffline.exe

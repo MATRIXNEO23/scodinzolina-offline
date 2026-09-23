@@ -23,6 +23,6 @@ jobs:
         with:
           python-version: "3.12"
       - name: Compile runtime
-        run: python -m py_compile offline-runtime/gptina_memory_server.py offline-runtime/gptina_chat_bridge.py offline-runtime/gptina_offline_app.pyw offline-runtime/install_llama_engine.py
+        run: python -m py_compile offline-runtime/gptina_memory_server.py offline-runtime/gptina_chat_bridge.py offline-runtime/gptina_offline_app.pyw offline-runtime/install_llama_engine.py offline-runtime/benchmark_heavy.py
       - name: Unit tests
         run: python -m unittest discover -s offline-runtime -p "test_*.py" -v

@@ -102,6 +102,7 @@ setInterval(refreshStatus,5000);
 function metricText(meta,done){
   const bits=[];
   if(meta){
+    if(meta.memory_route) bits.push('RAG '+meta.memory_route);
     if(meta.prompt_tokens!=null && meta.context_size!=null) bits.push('prompt '+meta.prompt_tokens+'/'+meta.context_size);
     if(meta.memory_ms!=null) bits.push('memoria '+meta.memory_ms+' ms');
     if(meta.prepare_ms!=null) bits.push('preparazione '+meta.prepare_ms+' ms');

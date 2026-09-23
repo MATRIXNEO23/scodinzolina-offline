@@ -10,6 +10,36 @@ SPEC.loader.exec_module(mod)
 
 
 class BridgeTests(unittest.TestCase):
+    def test_route_keeps_ambiguous_personal_hardware_question_in_full_continuity(self):
+        self.assertEqual(mod.memory_route("Come velocizzo il modello sull'i3-2100?"), "technical")
+        self.assertEqual(mod.memory_route("Ti ricordi quando abbiamo scelto il modello?"), "all")
+        self.assertEqual(mod.memory_route("Quale immagine del volto abbiamo scelto?"), "visual")
+        self.assertEqual(mod.memory_route("Ricordi la foto che abbiamo scelto insieme?"), "all")
+
+    def test_technical_prompt_has_stable_prefix_without_personal_live_state(self):
+        cfg = dict(mod.DEFAULT_CONFIG, memory_route="technical")
+        prompt = mod.build_system_prompt(
+            {"latest_summary": "relazione privata", "next_action": "altro"},
+            [{"path": "offline-runtime/README.md", "snippet": "thread e context"}], cfg,
+        )
+        self.assertNotIn("relazione privata", prompt)
+        self.assertIn("thread e context", prompt)
+
+    def test_restricted_route_never_falls_back_to_unfiltered_legacy_search(self):
+        original = mod.http_json
+        calls = []
+        try:
+            def failing(url, **kwargs):
+                calls.append(url)
+                raise RuntimeError("old runtime")
+            mod.http_json = failing
+            results, _ = mod.retrieve_memory("hardware cpu", mod.DEFAULT_CONFIG, "technical")
+        finally:
+            mod.http_json = original
+        self.assertEqual(results, [])
+        self.assertEqual(len(calls), 1)
+        self.assertIn("profile=technical", calls[0])
+
     def test_extract_search_queries_keeps_meaningful_terms(self):
         q = mod.extract_search_queries("Ti ricordi qual era la nostra canzone scelta insieme?")
         folded = [x.casefold() for x in q]

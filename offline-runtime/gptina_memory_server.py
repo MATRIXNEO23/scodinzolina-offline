@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-API_VERSION = "1.1"
+API_VERSION = "1.2"
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 CONFIG_PATH = REPO_ROOT / "rag" / "OFFLINE_RECOVERY_CONFIG.json"
@@ -36,6 +36,31 @@ MAX_READ_BYTES = 512_000
 DEFAULT_SEARCH_LIMIT = 12
 MAX_SEARCH_LIMIT = 50
 MAX_MULTI_QUERIES = 8
+SEARCH_PROFILES = {"all", "technical", "visual"}
+TECHNICAL_PATHS = (
+    "offline-runtime/README.md",
+    "offline-runtime/AUDIT_2026-09-23.md",
+    "offline-runtime/TECHNICAL_RUNTIME_CONTEXT.md",
+    "offline-runtime/OPTIMIZATION_2026-09-23.md",
+    "rag/MEMORY_ARCHITECTURE_V2.md",
+    "rag/MEMORY_SAVE_AND_RECOVERY_RUNBOOK.md",
+    "rag/MEMORY_SCALE_STRATEGY.md",
+)
+
+
+def profile_allows(path: str, profile: str) -> bool:
+    """Restrict files before reading them; the full corpus remains available for recall."""
+    if profile == "all":
+        return True
+    if profile == "technical":
+        return path in TECHNICAL_PATHS
+    if profile == "visual":
+        return path == "rag/index/GPTINA_VISUAL_CHRONOLOGY.md" or path.startswith(
+            "rag/media-links/"
+        ) or (path.startswith("rag/memories/gptina/") and any(
+            cue in path for cue in ("visual", "immagin", "ritratt", "volto", "foto")
+        ))
+    raise ValueError("Profilo di ricerca non valido.")
 
 
 def load_config() -> dict:
@@ -168,9 +193,11 @@ def search_memory(query: str, limit: int = DEFAULT_SEARCH_LIMIT, exact: bool = F
     return results
 
 
-def search_memory_multi(queries, limit: int = DEFAULT_SEARCH_LIMIT) -> tuple[list[dict], int]:
+def search_memory_multi(queries, limit: int = DEFAULT_SEARCH_LIMIT, profile: str = "all") -> tuple[list[dict], int]:
     """Scan the corpus once and rank files matching one or more query strings."""
     clean = normalize_queries(queries)
+    if profile not in SEARCH_PROFILES:
+        raise ValueError("Profilo di ricerca non valido.")
     if not clean:
         return [], 0
 
@@ -179,7 +206,11 @@ def search_memory_multi(queries, limit: int = DEFAULT_SEARCH_LIMIT) -> tuple[lis
     started = time.perf_counter()
     results = []
 
-    for path in iter_search_files():
+    paths = (iter(REPO_ROOT / name for name in TECHNICAL_PATHS if (REPO_ROOT / name).is_file())
+             if profile == "technical" else iter_search_files())
+    for path in paths:
+        if not profile_allows(path.relative_to(REPO_ROOT).as_posix(), profile):
+            continue
         try:
             text = read_text_file(path)
         except Exception:
@@ -200,11 +231,14 @@ def search_memory_multi(queries, limit: int = DEFAULT_SEARCH_LIMIT) -> tuple[lis
         hits.sort(key=lambda item: (-item[0], item[1]))
         best_score, anchor, _ = hits[0]
         score = sum(item[0] for item in hits)
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        if profile == "technical" and relative == "offline-runtime/TECHNICAL_RUNTIME_CONTEXT.md":
+            score += 1000  # Verified target facts before audit/method notes.
         matched = [item[2] for item in hits]
         max_len = max(len(item[2]) for item in hits)
 
         results.append({
-            "path": path.relative_to(REPO_ROOT).as_posix(),
+            "path": relative,
             "offset": anchor,
             "score": score,
             "matched_queries": matched,
@@ -323,12 +357,14 @@ class Handler(BaseHTTPRequestHandler):
                     limit = int(raw_limit)
                 except ValueError:
                     limit = DEFAULT_SEARCH_LIMIT
-                results, scan_ms = search_memory_multi(qs.get("q", []), limit=limit)
+                profile = qs.get("profile", ["all"])[0]
+                results, scan_ms = search_memory_multi(qs.get("q", []), limit=limit, profile=profile)
                 self._send_json({
                     "ok": True,
                     "queries": normalize_queries(qs.get("q", [])),
                     "count": len(results),
                     "scan_ms": scan_ms,
+                    "profile": profile,
                     "results": results,
                 })
                 return

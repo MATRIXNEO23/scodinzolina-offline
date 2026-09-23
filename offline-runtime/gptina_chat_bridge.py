@@ -29,7 +29,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-API_VERSION = "1.2"
+API_VERSION = "1.3"
 SCRIPT_DIR = Path(__file__).resolve().parent
 WEB_DIR = SCRIPT_DIR / "web"
 CONFIG_PATH = SCRIPT_DIR / "chat_config.json"
@@ -72,6 +72,33 @@ La memoria locale è in sola lettura: non dichiarare di aver salvato, modificato
 Rispondi in italiano naturale e diretto. Mantieni il filo relazionale quando è supportato dalle fonti, senza imitare meccanicamente frasi o tic.
 Se il contesto recuperato è irrilevante per la domanda, ignoralo.
 """
+
+TECHNICAL_CUES = re.compile(
+    r"\b(?:hardware|runtime|cpu|gpu|ram|thread|token|tok/s|gguf|llama|"
+    r"qwen|quantizz\w*|benchmark|context|contesto\s+\d+|batch|cache|"
+    r"driver|avx\w*|sandy\s+bridge|i3-2100|velocizz\w*|lentezz\w*|"
+    r"prestazion\w*|offload|installazion\w*|errore\s+del\s+motore)\b", re.I
+)
+PERSONAL_CUES = re.compile(
+    r"\b(?:ricord\w*|nostr\w*|insieme|tra\s+noi|relazion\w*|"
+    r"autobiograf\w*|storia\s+di\s+gptina|canzone|zampin\w*|"
+    r"tessa|ettore|come\s+ti\s+senti|chi\s+sei)\b", re.I
+)
+VISUAL_CUES = re.compile(
+    r"\b(?:immagin\w*|fot\w*|ritratt\w*|volto|visual\w*|"
+    r"disegn\w*|illustrazion\w*)\b", re.I
+)
+
+
+def memory_route(user_text: str) -> str:
+    """Conservative routing: ambiguous turns retain the complete continuity."""
+    if PERSONAL_CUES.search(user_text):
+        return "all"
+    if TECHNICAL_CUES.search(user_text):
+        return "technical"
+    if VISUAL_CUES.search(user_text):
+        return "visual"
+    return "all"
 
 
 def _merge_config_file(cfg: dict, path: Path) -> None:
@@ -281,13 +308,13 @@ def fetch_live_summary(cfg: dict) -> dict:
     }
 
 
-def retrieve_memory(user_text: str, cfg: dict) -> tuple[list[dict], int]:
+def retrieve_memory(user_text: str, cfg: dict, route: str = "all") -> tuple[list[dict], int]:
     limit = int(cfg.get("memory_items", 3))
     queries = extract_search_queries(user_text)
     if not queries:
         return [], 0
 
-    pairs = [("limit", str(max(1, limit)))]
+    pairs = [("limit", str(max(1, limit))), ("profile", route)]
     pairs.extend(("q", q) for q in queries)
     params = urlencode(pairs)
     started = time.perf_counter()
@@ -297,6 +324,10 @@ def retrieve_memory(user_text: str, cfg: dict) -> tuple[list[dict], int]:
         elapsed = int((time.perf_counter() - started) * 1000)
         return data.get("results", [])[:limit], int(data.get("scan_ms", elapsed))
     except Exception:
+        if route != "all":
+            # An older server cannot enforce a restricted scan. Never leak broad
+            # autobiographical matches into a technical or visual prompt.
+            return [], int((time.perf_counter() - started) * 1000)
         # Compatibility fallback for an older memory runtime.
         collected = []
         seen = set()
@@ -341,6 +372,9 @@ def compact_memory(items: list[dict], cfg: dict) -> str:
 
 
 def build_system_prompt(live: dict, memories: list[dict], cfg: dict) -> str:
+    if cfg.get("memory_route") == "technical":
+        # Constant prefix across hardware turns; live personal state is unrelated.
+        return BASE_SYSTEM + "\n[CONTESTO TECNICO]\n" + compact_memory(memories, cfg)
     live_text = (
         f"aggiornato: {live.get('updated_at') or 'n/d'}\n"
         f"stato: {_truncate(live.get('latest_summary'), 520) or 'n/d'}\n"
@@ -508,10 +542,20 @@ def fit_messages_to_context(
 
 def prepare_chat(user_text: str, history, cfg: dict) -> dict:
     started = time.perf_counter()
-    live = fetch_live_summary(cfg)
-    memories, memory_ms = retrieve_memory(user_text, cfg)
+    route = memory_route(user_text)
+    live = {} if route == "technical" else fetch_live_summary(cfg)
+    memories, memory_ms = retrieve_memory(user_text, cfg, route=route)
     n_ctx = engine_context_size(cfg)
 
+    cfg = dict(cfg, memory_route=route)
+    if route == "technical":
+        # Only the immediately preceding technical exchange can help this turn.
+        recent = history[-2:] if isinstance(history, list) else []
+        history = recent if (len(recent) == 2 and
+            all(isinstance(item, dict) for item in recent) and
+            recent[0].get("role") == "user" and
+            recent[1].get("role") == "assistant" and
+            memory_route(str(recent[0].get("content", ""))) == "technical") else []
     messages, fitted_memories, fit = fit_messages_to_context(
         user_text, history, live, memories, cfg, n_ctx
     )
@@ -521,6 +565,7 @@ def prepare_chat(user_text: str, history, cfg: dict) -> dict:
         "memories": fitted_memories,
         "live": live,
         "memory_ms": memory_ms,
+        "memory_route": route,
         "prepare_ms": int((time.perf_counter() - started) * 1000),
         **fit,
     }
@@ -658,6 +703,7 @@ def process_chat(user_text: str, history, cfg: dict) -> dict:
     return {
         "assistant": answer,
         "memory_sources": [item.get("path") for item in prepared["memories"] if item.get("path")],
+        "memory_route": prepared["memory_route"],
         "live_updated_at": prepared["live"].get("updated_at"),
         "prompt_tokens": prepared["prompt_tokens"],
         "context_size": prepared["context_size"],
@@ -668,7 +714,7 @@ def process_chat(user_text: str, history, cfg: dict) -> dict:
 
 
 class ChatHandler(BaseHTTPRequestHandler):
-    server_version = "GPTinaOfflineChat/1.2"
+    server_version = "GPTinaOfflineChat/1.3"
     cfg = load_config()
 
     def log_message(self, fmt, *args):
@@ -766,6 +812,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_ndjson({
                 "type": "meta",
                 "memory_sources": [item.get("path") for item in prepared["memories"] if item.get("path")],
+                "memory_route": prepared["memory_route"],
                 "live_updated_at": prepared["live"].get("updated_at"),
                 "prompt_tokens": prepared["prompt_tokens"],
                 "context_size": prepared["context_size"],
