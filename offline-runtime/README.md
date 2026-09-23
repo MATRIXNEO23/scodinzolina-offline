@@ -1,29 +1,121 @@
 # GPTina Offline — launcher unico
 
-Questa cartella contiene il runtime locale di GPTina.
+Runtime locale per usare un modello GGUF su llama.cpp insieme alla continuity offline di GPTina.
 
-Il percorso normale non richiede KoboldCpp: usa direttamente **llama.cpp** come motore GGUF CPU e avvia memoria + RAG + chat con un solo launcher.
+Percorso normale:
 
-## Uso
+`launcher → llama.cpp → memoria read-only → RAG/chat bridge → browser`
+
+KoboldCpp non è necessario.
+
+## Avvio
 
 Dalla radice della repository:
 
-1. chiudi KoboldCpp, se è aperto;
-2. fai doppio clic su `AVVIA_GPTINA_OFFLINE.bat`;
+1. chiudi KoboldCpp e vecchie finestre GPTina;
+2. doppio clic su `AVVIA_GPTINA_OFFLINE.bat`;
 3. la prima volta premi **Installa / aggiorna motore**;
-4. scegli il file `.gguf`;
+4. seleziona il file `.gguf`;
 5. premi **AVVIA GPTINA**.
 
 L'app avvia:
 
-- motore llama.cpp: `127.0.0.1:5001`;
-- memoria GPTina read-only: `127.0.0.1:8765`;
-- chat/RAG: `127.0.0.1:8766`;
-- browser direttamente sulla chat.
+- llama.cpp: `127.0.0.1:5001`;
+- GPTina Memory: `127.0.0.1:8765`;
+- GPTina Chat/RAG: `127.0.0.1:8766`;
+- browser sulla chat.
 
-## Profilo iniziale per l'i3-2100
+## Streaming
 
-Impostazioni conservative iniziali:
+La chat usa `/chat/stream`.
+
+I token vengono mostrati mentre il motore li genera. Non è più necessario aspettare la fine dell'intera risposta per vedere testo.
+
+Sotto la risposta vengono mostrati, quando disponibili:
+
+- token prompt / context;
+- tempo retrieval memoria;
+- tempo preparazione;
+- tempo al primo token;
+- token/sec di generazione;
+- prompt token/sec.
+
+## Diagnostica ed errori
+
+Nel launcher premi:
+
+**Diagnostica / errori**
+
+Si apre una finestra con quattro pannelli:
+
+- Motore
+- Memoria
+- Chat
+- Launcher
+
+I log vengono aggiornati automaticamente.
+
+File:
+
+- `offline-runtime\logs\engine.log`
+- `offline-runtime\logs\memory.log`
+- `offline-runtime\logs\chat.log`
+
+Il log della sessione precedente viene conservato come `.previous`.
+
+Gli errori di avvio aprono automaticamente la diagnostica.
+
+## Protezione contro servizi vecchi
+
+Memory runtime e chat bridge hanno una versione API.
+
+Il launcher non riutilizza silenziosamente:
+
+- una vecchia istanza GPTina;
+- una porta occupata da un programma diverso;
+- KoboldCpp sulla porta del motore;
+- un llama-server già aperto con un GGUF differente.
+
+In questi casi mostra un errore esplicito.
+
+## Context
+
+Il bridge legge il context reale da llama.cpp tramite `/props`.
+
+Prima della generazione usa:
+
+- `/apply-template`;
+- `/tokenize`.
+
+In questo modo verifica che prompt, memoria, history e spazio di risposta entrino davvero nel context.
+
+Quando serve riduce prima la history vecchia e poi il materiale RAG meno prioritario. Il messaggio corrente dell'utente non viene eliminato.
+
+## Memoria
+
+Il memory runtime resta **read-only**.
+
+Per la ricerca normale il bridge usa `/search_multi`: più termini vengono cercati con una sola scansione della continuity, invece di rileggere più volte gli stessi file.
+
+Endpoint principali:
+
+- `http://127.0.0.1:8765/health`
+- `http://127.0.0.1:8765/recover/current`
+- `http://127.0.0.1:8765/search_multi?q=termine&q=altro`
+
+## Chat bridge
+
+Endpoint:
+
+- `http://127.0.0.1:8766/health`
+- `http://127.0.0.1:8766/status`
+- `http://127.0.0.1:8766/diagnostics`
+- `POST /chat` — compatibilità sincrona;
+- `POST /chat/stream` — percorso normale streaming.
+
+## Profilo iniziale i3-2100
+
+Impostazioni conservative:
 
 - CPU only;
 - 2 thread;
@@ -34,52 +126,61 @@ Impostazioni conservative iniziali:
 - GPU layers 0;
 - Flash Attention off.
 
-Dopo il primo test confrontare 2 e 4 thread usando i token/sec reali.
+Il campo **Max risposta** del launcher viene propagato anche al bridge tramite:
 
-## Motore
+`offline-runtime\.gptina_runtime_config.json`
 
-Il workflow `.github/workflows/build-gptina-sandybridge-engine.yml` costruisce un `llama-server.exe` CPU x64 da una versione di llama.cpp fissata.
+Questo file è locale e ignorato da Git.
 
-La build è mirata a **Sandy Bridge**: SSE4.2 + AVX, con AVX2/FMA/F16C disattivati, così l'eseguibile resta compatibile con l'i3-2100.
+Dopo una prima risposta breve, confrontare 2 e 4 thread usando lo stesso prompt e il valore tok/s mostrato dalla chat.
 
-Su `main` il workflow pubblica il pacchetto:
+## Qwen e thinking
 
-`gptina-llama-sandybridge-engine.zip`
+Il bridge prova a disattivare thinking/reasoning per evitare di consumare tempo e token inutilmente sui Qwen che lo supportano:
 
-nella release:
+- `enable_thinking=false`;
+- `reasoning_effort=none`.
+
+Se un template produce soltanto reasoning e nessuna risposta finale, viene mostrato un errore diagnostico.
+
+## Motore Sandy Bridge
+
+Il workflow:
+
+`.github/workflows/build-gptina-sandybridge-engine.yml`
+
+costruisce un `llama-server.exe` x64 fissato a una revisione di llama.cpp.
+
+Target CPU:
+
+- SSE4.2 ON;
+- AVX ON;
+- AVX2 OFF;
+- FMA OFF;
+- F16C OFF.
+
+La release è:
 
 `gptina-engine-v1`
 
-Il pulsante **Installa / aggiorna motore** lo scarica e lo estrae in:
+e contiene:
+
+`gptina-llama-sandybridge-engine.zip`
+
+Il pulsante **Installa / aggiorna motore** scarica quel pacchetto in:
 
 `offline-runtime\engine\`
 
-## Memoria
+## Sicurezza
 
-La continuity resta in sola lettura:
-
-- nessun commit o push dal runtime;
+- servizi solo localhost;
+- nessun commit/push nel runtime;
 - nessuna scrittura nella continuity;
-- nessun accesso automatico alla repository canonica;
-- servizi esposti solo su localhost.
+- nessuna sincronizzazione automatica verso la canonica;
+- la repository `MATRIXNEO23/scodinzolina-conntinuity` resta separata e non viene modificata.
 
-La canonica `MATRIXNEO23/scodinzolina-conntinuity` non viene modificata.
+## Audit
 
-## File principali
+I problemi trovati e i relativi fix sono documentati in:
 
-- `gptina_offline_app.pyw` — launcher grafico;
-- `install_llama_engine.py` — installazione del motore;
-- `gptina_memory_server.py` — memoria read-only;
-- `gptina_chat_bridge.py` — retrieval + chat;
-- `web/index.html` — interfaccia chat;
-- `chat_config.json` — limiti del prompt/RAG.
-
-## Log
-
-In caso di errore:
-
-- `offline-runtime\logs\engine.log`
-- `offline-runtime\logs\memory.log`
-- `offline-runtime\logs\chat.log`
-
-La compatibilità KoboldCpp resta soltanto come fallback nel bridge, ma non è più il percorso normale.
+`offline-runtime/AUDIT_2026-09-23.md`

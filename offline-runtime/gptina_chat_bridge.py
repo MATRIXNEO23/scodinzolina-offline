@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 GPTina Offline Chat Bridge
-Local, read-only RAG bridge between GPTina Offline Memory and a local OpenAI-compatible inference engine.
+Read-only local RAG bridge between GPTina Offline Memory and a local
+OpenAI-compatible inference engine (llama.cpp preferred).
 
-- Memory:   http://127.0.0.1:8765
-- Engine:   http://127.0.0.1:5001
-- Chat UI:  http://127.0.0.1:8766
+- Memory: http://127.0.0.1:8765
+- Engine: http://127.0.0.1:5001
+- Chat UI: http://127.0.0.1:8766
 
 No third-party Python dependencies.
 """
@@ -13,6 +14,7 @@ No third-party Python dependencies.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import re
@@ -27,9 +29,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+API_VERSION = "1.2"
 SCRIPT_DIR = Path(__file__).resolve().parent
 WEB_DIR = SCRIPT_DIR / "web"
 CONFIG_PATH = SCRIPT_DIR / "chat_config.json"
+RUNTIME_CONFIG_PATH = SCRIPT_DIR / ".gptina_runtime_config.json"
 MEMORY_SERVER_SCRIPT = SCRIPT_DIR / "gptina_memory_server.py"
 
 DEFAULT_CONFIG = {
@@ -45,6 +49,9 @@ DEFAULT_CONFIG = {
     "history_chars": 1800,
     "memory_items": 3,
     "memory_snippet_chars": 320,
+    "context_size": 1024,
+    "disable_thinking": True,
+    "generation_timeout_seconds": 900,
 }
 
 ITALIAN_STOPWORDS = {
@@ -67,16 +74,26 @@ Se il contesto recuperato è irrilevante per la domanda, ignoralo.
 """
 
 
+def _merge_config_file(cfg: dict, path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            cfg.update(raw)
+    except Exception as exc:
+        print(f"[GPTina Chat] Config non valida {path.name}: {exc}")
+
+
 def load_config() -> dict:
     cfg = dict(DEFAULT_CONFIG)
-    if CONFIG_PATH.exists():
-        try:
-            raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                cfg.update(raw)
-        except Exception as exc:
-            print(f"[GPTina Chat] Config non valida, uso default: {exc}")
+    _merge_config_file(cfg, CONFIG_PATH)
+    _merge_config_file(cfg, RUNTIME_CONFIG_PATH)
     return cfg
+
+
+def engine_base(cfg: dict) -> str:
+    return cfg.get("engine_base", cfg.get("kobold_base", "http://127.0.0.1:5001")).rstrip("/")
 
 
 def http_json(url: str, *, method: str = "GET", payload=None, timeout: float = 8.0) -> dict:
@@ -91,14 +108,14 @@ def http_json(url: str, *, method: str = "GET", payload=None, timeout: float = 8
             body = response.read().decode("utf-8", errors="replace")
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-        raise RuntimeError(f"HTTP {exc.code} da {url}: {detail[:500]}") from exc
+        raise RuntimeError(f"HTTP {exc.code} da {url}: {detail[:1000]}") from exc
     except URLError as exc:
         raise RuntimeError(f"Servizio non raggiungibile: {url} ({exc.reason})") from exc
 
     try:
         return json.loads(body)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Risposta non JSON da {url}: {body[:500]}") from exc
+        raise RuntimeError(f"Risposta non JSON da {url}: {body[:1000]}") from exc
 
 
 def endpoint_ok(url: str, timeout: float = 2.0) -> bool:
@@ -110,8 +127,24 @@ def endpoint_ok(url: str, timeout: float = 2.0) -> bool:
         return False
 
 
+def get_engine_props(cfg: dict) -> dict:
+    return http_json(engine_base(cfg) + "/props", timeout=4.0)
+
+
+def engine_context_size(cfg: dict) -> int:
+    try:
+        props = get_engine_props(cfg)
+        value = props.get("default_generation_settings", {}).get("n_ctx")
+        if value:
+            return max(256, int(value))
+    except Exception:
+        pass
+    return max(256, int(cfg.get("context_size", 1024)))
+
+
 def service_status(cfg: dict) -> dict:
     status = {"memory": False, "engine": False}
+
     try:
         m = http_json(cfg["memory_base"].rstrip("/") + "/health", timeout=2.0)
         status["memory"] = bool(m.get("ok"))
@@ -119,11 +152,22 @@ def service_status(cfg: dict) -> dict:
     except Exception as exc:
         status["memory_error"] = str(exc)
 
-    base = cfg.get("engine_base", cfg.get("kobold_base", "http://127.0.0.1:5001")).rstrip("/")
+    base = engine_base(cfg)
     if endpoint_ok(base + "/health", timeout=2.0):
-        status["engine"] = True
-        status["engine_kind"] = "llama.cpp/openai-compatible"
+        try:
+            props = get_engine_props(cfg)
+            status["engine"] = True
+            status["engine_kind"] = "llama.cpp"
+            status["engine_detail"] = {
+                "model_path": props.get("model_path"),
+                "build_info": props.get("build_info"),
+                "n_ctx": props.get("default_generation_settings", {}).get("n_ctx"),
+                "chat_template": bool(props.get("chat_template")),
+            }
+        except Exception as exc:
+            status["engine_error"] = f"/health risponde ma /props no: {exc}"
     else:
+        # Diagnostic backward compatibility only. The launcher should prefer llama.cpp.
         try:
             k = http_json(base + "/api/extra/version", timeout=2.0)
             status["engine"] = True
@@ -135,9 +179,41 @@ def service_status(cfg: dict) -> dict:
     status["kobold"] = status["engine"]
     return status
 
+
+def diagnostics(cfg: dict) -> dict:
+    out = {"status": service_status(cfg)}
+    base = engine_base(cfg)
+
+    try:
+        props = http_json(base + "/props", timeout=3.0)
+        out["engine_props"] = {
+            "model_path": props.get("model_path"),
+            "build_info": props.get("build_info"),
+            "total_slots": props.get("total_slots"),
+            "n_ctx": props.get("default_generation_settings", {}).get("n_ctx"),
+            "chat_template_present": bool(props.get("chat_template")),
+            "is_sleeping": props.get("is_sleeping"),
+        }
+    except Exception as exc:
+        out["engine_props_error"] = str(exc)
+
+    try:
+        slots = http_json(base + "/slots", timeout=3.0)
+        out["slots"] = slots
+    except Exception as exc:
+        out["slots_error"] = str(exc)
+
+    return out
+
+
 def ensure_memory_server(cfg: dict) -> bool:
-    if service_status(cfg).get("memory"):
-        return True
+    try:
+        current = http_json(cfg["memory_base"].rstrip("/") + "/health", timeout=1.0)
+        if current.get("ok"):
+            return True
+    except Exception:
+        pass
+
     if not MEMORY_SERVER_SCRIPT.exists():
         return False
 
@@ -154,7 +230,7 @@ def ensure_memory_server(cfg: dict) -> bool:
         print(f"[GPTina Chat] Impossibile avviare memory runtime: {exc}")
         return False
 
-    for _ in range(20):
+    for _ in range(40):
         time.sleep(0.25)
         try:
             if http_json(cfg["memory_base"].rstrip("/") + "/health", timeout=1.0).get("ok"):
@@ -205,32 +281,56 @@ def fetch_live_summary(cfg: dict) -> dict:
     }
 
 
-def retrieve_memory(user_text: str, cfg: dict) -> list[dict]:
-    limit = int(cfg.get("memory_items", 4))
-    collected = []
-    seen = set()
+def retrieve_memory(user_text: str, cfg: dict) -> tuple[list[dict], int]:
+    limit = int(cfg.get("memory_items", 3))
+    queries = extract_search_queries(user_text)
+    if not queries:
+        return [], 0
 
-    for query_text in extract_search_queries(user_text):
-        params = urlencode({"q": query_text, "limit": max(2, limit)})
-        try:
-            data = http_json(cfg["memory_base"].rstrip("/") + "/search?" + params, timeout=6.0)
-        except Exception:
-            continue
-        for item in data.get("results", []):
-            key = (item.get("path"), item.get("offset"))
-            if key in seen:
+    pairs = [("limit", str(max(1, limit)))]
+    pairs.extend(("q", q) for q in queries)
+    params = urlencode(pairs)
+    started = time.perf_counter()
+
+    try:
+        data = http_json(cfg["memory_base"].rstrip("/") + "/search_multi?" + params, timeout=20.0)
+        elapsed = int((time.perf_counter() - started) * 1000)
+        return data.get("results", [])[:limit], int(data.get("scan_ms", elapsed))
+    except Exception:
+        # Compatibility fallback for an older memory runtime.
+        collected = []
+        seen = set()
+        for query_text in queries[:2]:
+            params = urlencode({"q": query_text, "limit": max(2, limit)})
+            try:
+                data = http_json(cfg["memory_base"].rstrip("/") + "/search?" + params, timeout=8.0)
+            except Exception:
                 continue
-            seen.add(key)
-            collected.append(item)
+            for item in data.get("results", []):
+                key = (item.get("path"), item.get("offset"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                collected.append(item)
+                if len(collected) >= limit:
+                    break
             if len(collected) >= limit:
-                return collected
-    return collected
+                break
+        elapsed = int((time.perf_counter() - started) * 1000)
+        return collected, elapsed
+
+
+def _truncate(value, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
 
 
 def compact_memory(items: list[dict], cfg: dict) -> str:
     if not items:
         return "(nessun frammento specifico trovato)"
-    max_chars = int(cfg.get("memory_snippet_chars", 360))
+    max_chars = int(cfg.get("memory_snippet_chars", 320))
     chunks = []
     for item in items:
         snippet = " ".join(str(item.get("snippet", "")).split())
@@ -243,8 +343,8 @@ def compact_memory(items: list[dict], cfg: dict) -> str:
 def build_system_prompt(live: dict, memories: list[dict], cfg: dict) -> str:
     live_text = (
         f"aggiornato: {live.get('updated_at') or 'n/d'}\n"
-        f"stato: {live.get('latest_summary') or 'n/d'}\n"
-        f"prossima azione: {live.get('next_action') or 'n/d'}"
+        f"stato: {_truncate(live.get('latest_summary'), 520) or 'n/d'}\n"
+        f"prossima azione: {_truncate(live.get('next_action'), 280) or 'n/d'}"
     )
     return (
         BASE_SYSTEM
@@ -260,7 +360,7 @@ def trim_history(history, cfg: dict) -> list[dict]:
         return []
 
     max_messages = int(cfg.get("history_messages", 4))
-    max_chars = int(cfg.get("history_chars", 2400))
+    max_chars = int(cfg.get("history_chars", 1800))
     cleaned = []
 
     for item in history[-max_messages:]:
@@ -286,36 +386,257 @@ def trim_history(history, cfg: dict) -> list[dict]:
     return list(reversed(kept))
 
 
-def call_engine(user_text: str, history, system_prompt: str, cfg: dict) -> str:
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(trim_history(history, cfg))
-    messages.append({"role": "user", "content": user_text})
+def count_chat_tokens(messages: list[dict], cfg: dict) -> int:
+    base = engine_base(cfg)
+    applied = http_json(
+        base + "/apply-template",
+        method="POST",
+        payload={"messages": messages},
+        timeout=20.0,
+    )
+    prompt = applied.get("prompt", "")
+    tokenized = http_json(
+        base + "/tokenize",
+        method="POST",
+        payload={"content": prompt, "add_special": False, "parse_special": True},
+        timeout=20.0,
+    )
+    tokens = tokenized.get("tokens")
+    if not isinstance(tokens, list):
+        raise RuntimeError("Il motore non ha restituito una lista token.")
+    return len(tokens)
 
-    payload = {
-        "model": cfg.get("model", "koboldcpp"),
+
+def approximate_tokens(messages: list[dict]) -> int:
+    chars = sum(len(str(item.get("content", ""))) for item in messages)
+    return max(1, int(chars / 3.4) + 24)
+
+
+def _count_tokens_safe(messages: list[dict], cfg: dict) -> tuple[int, bool]:
+    try:
+        return count_chat_tokens(messages, cfg), True
+    except Exception:
+        return approximate_tokens(messages), False
+
+
+def fit_messages_to_context(
+    user_text: str,
+    history,
+    live: dict,
+    memories: list[dict],
+    cfg: dict,
+    n_ctx: int,
+) -> tuple[list[dict], list[dict], dict]:
+    """Fit system + history + user into the engine context while preserving the current turn."""
+    working_history = trim_history(history, cfg)
+    working_memories = list(memories)
+    working_live = dict(live)
+    local_cfg = dict(cfg)
+
+    max_tokens = max(32, int(cfg.get("max_tokens", 160)))
+    reserve = max_tokens + 24
+    input_budget = n_ctx - reserve
+    if input_budget < 160:
+        raise ValueError(
+            f"Context troppo piccolo ({n_ctx}) per riservare {max_tokens} token di risposta."
+        )
+
+    exact_used = True
+    adjustments = []
+
+    def build_messages():
+        system_prompt = build_system_prompt(working_live, working_memories, local_cfg)
+        result = [{"role": "system", "content": system_prompt}]
+        result.extend(working_history)
+        result.append({"role": "user", "content": user_text})
+        return result
+
+    for _ in range(12):
+        messages = build_messages()
+        token_count, exact = _count_tokens_safe(messages, cfg)
+        exact_used = exact_used and exact
+        if token_count <= input_budget:
+            return messages, working_memories, {
+                "prompt_tokens": token_count,
+                "context_size": n_ctx,
+                "input_budget": input_budget,
+                "exact_token_count": exact_used,
+                "adjustments": adjustments,
+            }
+
+        if len(working_history) >= 2:
+            working_history = working_history[2:]
+            adjustments.append("history_oldest_pair_removed")
+            continue
+        if working_history:
+            working_history = []
+            adjustments.append("history_removed")
+            continue
+        if len(working_memories) > 1:
+            working_memories = working_memories[:-1]
+            adjustments.append("memory_item_removed")
+            continue
+
+        snippet_chars = int(local_cfg.get("memory_snippet_chars", 320))
+        if snippet_chars > 160:
+            local_cfg["memory_snippet_chars"] = max(160, snippet_chars - 80)
+            adjustments.append("memory_snippets_shortened")
+            continue
+
+        summary = str(working_live.get("latest_summary") or "")
+        action = str(working_live.get("next_action") or "")
+        if len(summary) > 220 or len(action) > 140:
+            working_live["latest_summary"] = _truncate(summary, 220)
+            working_live["next_action"] = _truncate(action, 140)
+            adjustments.append("live_summary_shortened")
+            continue
+
+        # At this point only essential system text + current user turn remain.
+        raise ValueError(
+            f"Il messaggio corrente non entra nel context {n_ctx}. "
+            "Riduci il testo oppure aumenta Context nel launcher."
+        )
+
+    raise ValueError("Impossibile adattare il prompt al context disponibile.")
+
+
+def prepare_chat(user_text: str, history, cfg: dict) -> dict:
+    started = time.perf_counter()
+    live = fetch_live_summary(cfg)
+    memories, memory_ms = retrieve_memory(user_text, cfg)
+    n_ctx = engine_context_size(cfg)
+
+    messages, fitted_memories, fit = fit_messages_to_context(
+        user_text, history, live, memories, cfg, n_ctx
+    )
+
+    return {
         "messages": messages,
-        "stream": False,
-        "max_tokens": int(cfg.get("max_tokens", 220)),
-        "temperature": float(cfg.get("temperature", 0.72)),
-        "top_p": float(cfg.get("top_p", 0.90)),
+        "memories": fitted_memories,
+        "live": live,
+        "memory_ms": memory_ms,
+        "prepare_ms": int((time.perf_counter() - started) * 1000),
+        **fit,
     }
 
+
+def generation_payload(messages: list[dict], cfg: dict, *, stream: bool) -> dict:
+    payload = {
+        "model": cfg.get("model", "local"),
+        "messages": messages,
+        "stream": stream,
+        "max_tokens": int(cfg.get("max_tokens", 160)),
+        "temperature": float(cfg.get("temperature", 0.72)),
+        "top_p": float(cfg.get("top_p", 0.90)),
+        "cache_prompt": True,
+    }
+
+    if cfg.get("disable_thinking", True):
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+        payload["reasoning_effort"] = "none"
+
+    return payload
+
+
+def call_engine(messages: list[dict], cfg: dict) -> tuple[str, dict]:
     data = http_json(
-        cfg.get("engine_base", cfg.get("kobold_base", "http://127.0.0.1:5001")).rstrip("/") + "/v1/chat/completions",
+        engine_base(cfg) + "/v1/chat/completions",
         method="POST",
-        payload=payload,
-        timeout=300.0,
+        payload=generation_payload(messages, cfg, stream=False),
+        timeout=float(cfg.get("generation_timeout_seconds", 900)),
     )
 
     try:
         text = data["choices"][0]["message"]["content"]
     except Exception as exc:
-        raise RuntimeError(f"Formato risposta motore inatteso: {json.dumps(data)[:800]}") from exc
+        raise RuntimeError(f"Formato risposta motore inatteso: {json.dumps(data)[:1200]}") from exc
 
-    text = str(text).strip()
+    text = str(text or "").strip()
     if not text:
+        reasoning = ""
+        try:
+            reasoning = str(data["choices"][0]["message"].get("reasoning_content") or "")
+        except Exception:
+            pass
+        if reasoning:
+            raise RuntimeError(
+                "Il modello ha prodotto soltanto reasoning e nessuna risposta finale. "
+                "La modalità thinking potrebbe non essere stata disattivata dal template."
+            )
         raise RuntimeError("Il motore locale ha restituito una risposta vuota.")
-    return text
+
+    return text, {
+        "timings": data.get("timings"),
+        "usage": data.get("usage"),
+    }
+
+
+def parse_openai_sse_line(line: str) -> dict | None:
+    line = line.strip()
+    if not line or line.startswith(":"):
+        return None
+    if not line.startswith("data:"):
+        return None
+
+    raw = line[5:].strip()
+    if raw == "[DONE]":
+        return {"type": "done"}
+
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"type": "malformed", "raw": raw[:500]}
+
+    event = {"type": "chunk", "raw": obj}
+    if obj.get("timings"):
+        event["timings"] = obj.get("timings")
+    if obj.get("usage"):
+        event["usage"] = obj.get("usage")
+
+    choices = obj.get("choices") or []
+    if choices:
+        delta = choices[0].get("delta") or {}
+        content = delta.get("content")
+        reasoning = delta.get("reasoning_content")
+        if content:
+            event["content"] = str(content)
+        if reasoning:
+            event["reasoning_chars"] = len(str(reasoning))
+        finish = choices[0].get("finish_reason")
+        if finish:
+            event["finish_reason"] = finish
+
+    return event
+
+
+def iter_engine_stream(messages: list[dict], cfg: dict):
+    payload = generation_payload(messages, cfg, stream=True)
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = Request(
+        engine_base(cfg) + "/v1/chat/completions",
+        data=data,
+        headers={
+            "Accept": "text/event-stream",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    timeout = float(cfg.get("generation_timeout_seconds", 900))
+    try:
+        response = urlopen(req, timeout=timeout)
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        raise RuntimeError(f"HTTP {exc.code} dal motore: {detail[:1600]}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Motore non raggiungibile: {exc.reason}") from exc
+
+    with response:
+        for raw_line in response:
+            line = raw_line.decode("utf-8", errors="replace")
+            event = parse_openai_sse_line(line)
+            if event is not None:
+                yield event
 
 
 def process_chat(user_text: str, history, cfg: dict) -> dict:
@@ -325,20 +646,23 @@ def process_chat(user_text: str, history, cfg: dict) -> dict:
     if len(user_text) > 5000:
         raise ValueError("Messaggio troppo lungo per il bridge locale.")
 
-    live = fetch_live_summary(cfg)
-    memories = retrieve_memory(user_text, cfg)
-    system_prompt = build_system_prompt(live, memories, cfg)
-    answer = call_engine(user_text, history, system_prompt, cfg)
+    prepared = prepare_chat(user_text, history, cfg)
+    answer, engine_meta = call_engine(prepared["messages"], cfg)
 
     return {
         "assistant": answer,
-        "memory_sources": [item.get("path") for item in memories if item.get("path")],
-        "live_updated_at": live.get("updated_at"),
+        "memory_sources": [item.get("path") for item in prepared["memories"] if item.get("path")],
+        "live_updated_at": prepared["live"].get("updated_at"),
+        "prompt_tokens": prepared["prompt_tokens"],
+        "context_size": prepared["context_size"],
+        "memory_ms": prepared["memory_ms"],
+        "prepare_ms": prepared["prepare_ms"],
+        **engine_meta,
     }
 
 
 class ChatHandler(BaseHTTPRequestHandler):
-    server_version = "GPTinaOfflineChat/1.0"
+    server_version = "GPTinaOfflineChat/1.2"
     cfg = load_config()
 
     def log_message(self, fmt, *args):
@@ -362,8 +686,22 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_ndjson_headers(self):
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+    def send_ndjson(self, payload):
+        line = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+        self.wfile.write(line)
+        self.wfile.flush()
+
     def do_GET(self):
-        if self.path in {"/", "/index.html"}:
+        parsed_path = self.path.split("?", 1)[0]
+
+        if parsed_path in {"/", "/index.html"}:
             index = WEB_DIR / "index.html"
             if not index.exists():
                 self.send_json({"ok": False, "error": "UI non trovata."}, HTTPStatus.NOT_FOUND)
@@ -371,18 +709,26 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.send_file(index, "text/html; charset=utf-8")
             return
 
-        if self.path == "/health":
-            self.send_json({"ok": True, "service": "GPTina Offline Chat Bridge"})
+        if parsed_path == "/health":
+            self.send_json({
+                "ok": True,
+                "service": "GPTina Offline Chat Bridge",
+                "api_version": API_VERSION,
+            })
             return
 
-        if self.path == "/status":
-            self.send_json({"ok": True, **service_status(self.cfg)})
+        if parsed_path == "/status":
+            self.send_json({"ok": True, "api_version": API_VERSION, **service_status(self.cfg)})
+            return
+
+        if parsed_path == "/diagnostics":
+            self.send_json({"ok": True, "api_version": API_VERSION, **diagnostics(self.cfg)})
             return
 
         self.send_json({"ok": False, "error": "Endpoint non trovato."}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self):
-        if self.path != "/chat":
+        if self.path not in {"/chat", "/chat/stream"}:
             self.send_json({"ok": False, "error": "Endpoint non trovato."}, HTTPStatus.NOT_FOUND)
             return
 
@@ -391,12 +737,93 @@ class ChatHandler(BaseHTTPRequestHandler):
             if length <= 0 or length > 1_000_000:
                 raise ValueError("Payload non valido.")
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            result = process_chat(payload.get("message", ""), payload.get("history", []), self.cfg)
-            self.send_json({"ok": True, **result})
+            message = " ".join(str(payload.get("message", "")).split())
+            history = payload.get("history", [])
+
+            if self.path == "/chat":
+                result = process_chat(message, history, self.cfg)
+                self.send_json({"ok": True, **result})
+                return
+
+            if not message:
+                raise ValueError("Messaggio vuoto.")
+            if len(message) > 5000:
+                raise ValueError("Messaggio troppo lungo per il bridge locale.")
+
+            prepared = prepare_chat(message, history, self.cfg)
+            self.send_ndjson_headers()
+            self.send_ndjson({
+                "type": "meta",
+                "memory_sources": [item.get("path") for item in prepared["memories"] if item.get("path")],
+                "live_updated_at": prepared["live"].get("updated_at"),
+                "prompt_tokens": prepared["prompt_tokens"],
+                "context_size": prepared["context_size"],
+                "memory_ms": prepared["memory_ms"],
+                "prepare_ms": prepared["prepare_ms"],
+                "adjustments": prepared.get("adjustments", []),
+            })
+
+            started = time.perf_counter()
+            first_token_ms = None
+            timings = None
+            usage = None
+            reasoning_chars = 0
+            content_chars = 0
+
+            try:
+                for event in iter_engine_stream(prepared["messages"], self.cfg):
+                    if event.get("timings"):
+                        timings = event.get("timings")
+                    if event.get("usage"):
+                        usage = event.get("usage")
+                    reasoning_chars += int(event.get("reasoning_chars", 0))
+
+                    token = event.get("content")
+                    if token:
+                        if first_token_ms is None:
+                            first_token_ms = int((time.perf_counter() - started) * 1000)
+                        content_chars += len(token)
+                        self.send_ndjson({"type": "token", "text": token})
+            except (BrokenPipeError, ConnectionResetError):
+                return
+
+            if content_chars == 0 and reasoning_chars > 0:
+                self.send_ndjson({
+                    "type": "error",
+                    "error": (
+                        "Il modello ha prodotto soltanto reasoning e nessuna risposta finale. "
+                        "Il template potrebbe ignorare la disattivazione del thinking."
+                    ),
+                })
+                return
+
+            self.send_ndjson({
+                "type": "done",
+                "first_token_ms": first_token_ms,
+                "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                "timings": timings,
+                "usage": usage,
+                "reasoning_chars_hidden": reasoning_chars,
+            })
+
         except ValueError as exc:
-            self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            if self.path == "/chat/stream":
+                try:
+                    self.send_ndjson_headers()
+                    self.send_ndjson({"type": "error", "error": str(exc)})
+                except Exception:
+                    pass
+            else:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except Exception as exc:
-            self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            if self.path == "/chat/stream":
+                try:
+                    self.send_ndjson_headers()
+                    self.send_ndjson({"type": "error", "error": str(exc)})
+                except Exception:
+                    pass
+            else:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_GATEWAY)
 
 
 def main():
@@ -416,13 +843,14 @@ def main():
 
     status = service_status(cfg)
     print(f"[GPTina Chat] Motore locale: {'OK' if status.get('engine') else 'NON RAGGIUNGIBILE'}")
-    if not status.get("kobold"):
+    if not status.get("engine"):
         print("[GPTina Chat] Avvia il motore locale prima di scrivere in chat.")
 
     host = args.host or cfg.get("chat_host", "127.0.0.1")
     port = args.port or int(cfg.get("chat_port", 8766))
     url = f"http://{host}:{port}"
 
+    print(f"[GPTina Chat] API {API_VERSION}")
     print(f"[GPTina Chat] UI: {url}")
     print("[GPTina Chat] Ctrl+C per chiudere.")
 

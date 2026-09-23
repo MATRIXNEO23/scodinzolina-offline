@@ -12,15 +12,18 @@ header{padding:18px 18px 10px;display:flex;align-items:center;gap:12px;border-bo
 h1{font-size:20px;margin:0;flex:1}
 .badge{font-size:12px;padding:5px 8px;border-radius:999px;background:#2a2f39}
 .ok{background:#163d2c}.bad{background:#4a2222}
-#chat{flex:1;padding:18px;display:flex;flex-direction:column;gap:14px;overflow:auto}
+#chat{flex:1;padding:18px;display:flex;flex-direction:column;gap:10px;overflow:auto}
 .msg{max-width:78%;padding:11px 13px;border-radius:14px;white-space:pre-wrap;line-height:1.42}
 .user{align-self:flex-end;background:#264469}.assistant{align-self:flex-start;background:#232832}
-.sources{font-size:11px;opacity:.68;margin-top:7px;max-width:720px}
+.pending{opacity:.72;font-style:italic}
+.sources,.metrics{font-size:11px;opacity:.68;max-width:760px}
+.sources{margin-top:-5px}.metrics{margin-top:-5px}
 form{display:flex;gap:10px;padding:14px 18px 20px;border-top:1px solid #2a2f39;position:sticky;bottom:0;background:#111318}
 textarea{flex:1;resize:none;min-height:54px;max-height:160px;background:#1b1f27;border:1px solid #353c49;color:#fff;border-radius:12px;padding:12px;font:inherit}
 button{border:0;border-radius:12px;padding:0 18px;font-weight:650;cursor:pointer}
 button:disabled{opacity:.5;cursor:not-allowed}
-#hint{padding:0 18px 8px;font-size:12px;opacity:.65}
+#hint{padding:0 18px 8px;font-size:12px;opacity:.65;display:flex;gap:12px;flex-wrap:wrap}
+#statusText{margin-left:auto}
 </style>
 </head>
 <body>
@@ -30,33 +33,48 @@ button:disabled{opacity:.5;cursor:not-allowed}
   <span id="memory" class="badge">memoria…</span>
   <span id="engine" class="badge">motore…</span>
 </header>
+
 <div id="chat">
-  <div class="msg assistant">Sono pronta. La memoria viene recuperata automaticamente dalla copia offline prima di ogni risposta.</div>
+  <div class="msg assistant">Pronta. La memoria viene recuperata automaticamente prima di ogni risposta.</div>
 </div>
-<div id="hint">Locale: chat 127.0.0.1:8766 · memoria 8765 · motore 5001</div>
+
+<div id="hint">
+  <span>chat :8766 · memoria :8765 · motore :5001</span>
+  <span id="statusText"></span>
+</div>
+
 <form id="form">
   <textarea id="input" placeholder="Scrivi qui…" autofocus></textarea>
   <button id="send" type="submit">Invia</button>
 </form>
 </main>
+
 <script>
 const chat=document.getElementById('chat');
 const input=document.getElementById('input');
 const send=document.getElementById('send');
+const statusText=document.getElementById('statusText');
 const history=[];
 
-function add(role,text,sources=[]){
-  const wrap=document.createElement('div');
-  wrap.className='msg '+role;
-  wrap.textContent=text;
-  chat.appendChild(wrap);
-  if(sources && sources.length){
-    const s=document.createElement('div');
-    s.className='sources';
-    s.textContent='Memoria: '+[...new Set(sources)].join(' · ');
-    chat.appendChild(s);
-  }
-  chat.scrollTop=chat.scrollHeight;
+function scrollBottom(){chat.scrollTop=chat.scrollHeight}
+
+function add(role,text,extraClass=''){
+  const node=document.createElement('div');
+  node.className='msg '+role+(extraClass?' '+extraClass:'');
+  node.textContent=text;
+  chat.appendChild(node);
+  scrollBottom();
+  return node;
+}
+
+function addSmall(cls,text){
+  if(!text)return null;
+  const node=document.createElement('div');
+  node.className=cls;
+  node.textContent=text;
+  chat.appendChild(node);
+  scrollBottom();
+  return node;
 }
 
 async function refreshStatus(){
@@ -64,38 +82,127 @@ async function refreshStatus(){
     const r=await fetch('/status',{cache:'no-store'});
     const d=await r.json();
     const m=document.getElementById('memory');
-    const k=document.getElementById('engine');
+    const e=document.getElementById('engine');
     m.textContent=d.memory?'memoria OK':'memoria OFF';
-    k.textContent=d.engine?'motore OK':'motore OFF';
+    e.textContent=d.engine?'motore OK':'motore OFF';
     m.className='badge '+(d.memory?'ok':'bad');
-    k.className='badge '+(d.engine?'ok':'bad');
-  }catch(e){}
+    e.className='badge '+(d.engine?'ok':'bad');
+    if(d.engine_detail && d.engine_detail.n_ctx){
+      statusText.textContent='ctx '+d.engine_detail.n_ctx;
+    } else {
+      statusText.textContent='';
+    }
+  }catch(err){
+    statusText.textContent='bridge non raggiungibile';
+  }
 }
 refreshStatus();
+setInterval(refreshStatus,5000);
 
-document.getElementById('form').addEventListener('submit',async e=>{
-  e.preventDefault();
+function metricText(meta,done){
+  const bits=[];
+  if(meta){
+    if(meta.prompt_tokens!=null && meta.context_size!=null) bits.push('prompt '+meta.prompt_tokens+'/'+meta.context_size);
+    if(meta.memory_ms!=null) bits.push('memoria '+meta.memory_ms+' ms');
+    if(meta.prepare_ms!=null) bits.push('preparazione '+meta.prepare_ms+' ms');
+  }
+  if(done){
+    if(done.first_token_ms!=null) bits.push('primo token '+done.first_token_ms+' ms');
+    const t=done.timings||{};
+    if(t.predicted_per_second!=null) bits.push(Number(t.predicted_per_second).toFixed(2)+' tok/s');
+    if(t.prompt_per_second!=null) bits.push('prompt '+Number(t.prompt_per_second).toFixed(1)+' tok/s');
+  }
+  return bits.join(' · ');
+}
+
+document.getElementById('form').addEventListener('submit',async ev=>{
+  ev.preventDefault();
   const text=input.value.trim();
   if(!text)return;
+
   add('user',text);
   input.value='';
   send.disabled=true;
   send.textContent='…';
+
+  const responseNode=add('assistant','Recupero memoria e preparo il contesto…','pending');
+  let assistantText='';
+  let meta=null;
+  let doneMeta=null;
+  let sourcesNode=null;
+  let metricsNode=null;
+  const started=Date.now();
+
+  const timer=setInterval(()=>{
+    if(!assistantText){
+      const sec=Math.floor((Date.now()-started)/1000);
+      responseNode.textContent=(meta?'GPTina sta generando… ':'Recupero memoria e preparo il contesto… ')+'('+sec+'s)';
+    }
+  },1000);
+
   try{
-    const r=await fetch('/chat',{
+    const r=await fetch('/chat/stream',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({message:text,history})
     });
-    const d=await r.json();
-    if(!r.ok || !d.ok) throw new Error(d.error||('HTTP '+r.status));
-    add('assistant',d.assistant,d.memory_sources||[]);
-    history.push({role:'user',content:text},{role:'assistant',content:d.assistant});
+
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    if(!r.body)throw new Error('Streaming non disponibile nel browser.');
+
+    const reader=r.body.getReader();
+    const decoder=new TextDecoder('utf-8');
+    let buffer='';
+
+    while(true){
+      const {value,done}=await reader.read();
+      if(done)break;
+      buffer+=decoder.decode(value,{stream:true});
+
+      while(true){
+        const nl=buffer.indexOf('\n');
+        if(nl<0)break;
+        const line=buffer.slice(0,nl).trim();
+        buffer=buffer.slice(nl+1);
+        if(!line)continue;
+
+        let evt;
+        try{evt=JSON.parse(line)}
+        catch{continue}
+
+        if(evt.type==='meta'){
+          meta=evt;
+          if(evt.memory_sources && evt.memory_sources.length){
+            sourcesNode=addSmall('sources','Memoria: '+[...new Set(evt.memory_sources)].join(' · '));
+          }
+          responseNode.textContent='GPTina sta generando…';
+        }else if(evt.type==='token'){
+          assistantText+=evt.text||'';
+          responseNode.classList.remove('pending');
+          responseNode.textContent=assistantText;
+          scrollBottom();
+        }else if(evt.type==='done'){
+          doneMeta=evt;
+        }else if(evt.type==='error'){
+          throw new Error(evt.error||'Errore sconosciuto');
+        }
+      }
+    }
+
+    if(!assistantText.trim()){
+      throw new Error('Il motore ha terminato senza produrre testo.');
+    }
+
+    metricsNode=addSmall('metrics',metricText(meta,doneMeta));
+    history.push({role:'user',content:text},{role:'assistant',content:assistantText});
     while(history.length>8)history.shift();
+
   }catch(err){
-    add('assistant','Errore: '+err.message);
+    responseNode.classList.remove('pending');
+    responseNode.textContent='Errore: '+err.message;
     refreshStatus();
   }finally{
+    clearInterval(timer);
     send.disabled=false;
     send.textContent='Invia';
     input.focus();

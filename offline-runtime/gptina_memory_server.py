@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+API_VERSION = "1.1"
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 CONFIG_PATH = REPO_ROOT / "rag" / "OFFLINE_RECOVERY_CONFIG.json"
@@ -34,6 +35,7 @@ EXCLUDED_PARTS = {
 MAX_READ_BYTES = 512_000
 DEFAULT_SEARCH_LIMIT = 12
 MAX_SEARCH_LIMIT = 50
+MAX_MULTI_QUERIES = 8
 
 
 def load_config() -> dict:
@@ -91,7 +93,8 @@ def iter_search_files():
     for name in top_level:
         p = REPO_ROOT / name
         if p.is_file():
-            seen.add(p.resolve())
+            resolved = p.resolve()
+            seen.add(resolved)
             yield p
 
     for root in roots:
@@ -109,6 +112,29 @@ def iter_search_files():
                 continue
             seen.add(resolved)
             yield p
+
+
+def normalize_queries(queries) -> list[str]:
+    out = []
+    seen = set()
+    for value in queries or []:
+        value = " ".join(str(value).strip().split())
+        if not value:
+            continue
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+        if len(out) >= MAX_MULTI_QUERIES:
+            break
+    return out
+
+
+def _snippet(text: str, offset: int, needle_len: int) -> str:
+    start = max(0, offset - 220)
+    end = min(len(text), offset + max(needle_len, 1) + 420)
+    return text[start:end].replace("\r", " ").replace("\n", " ").strip()
 
 
 def search_memory(query: str, limit: int = DEFAULT_SEARCH_LIMIT, exact: bool = False) -> list[dict]:
@@ -131,18 +157,63 @@ def search_memory(query: str, limit: int = DEFAULT_SEARCH_LIMIT, exact: bool = F
         if idx < 0:
             continue
 
-        start = max(0, idx - 220)
-        end = min(len(text), idx + len(query) + 420)
-        snippet = text[start:end].replace("\r", " ").replace("\n", " ").strip()
         results.append({
             "path": path.relative_to(REPO_ROOT).as_posix(),
             "offset": idx,
-            "snippet": snippet,
+            "snippet": _snippet(text, idx, len(query)),
         })
         if len(results) >= limit:
             break
 
     return results
+
+
+def search_memory_multi(queries, limit: int = DEFAULT_SEARCH_LIMIT) -> tuple[list[dict], int]:
+    """Scan the corpus once and rank files matching one or more query strings."""
+    clean = normalize_queries(queries)
+    if not clean:
+        return [], 0
+
+    limit = max(1, min(limit, MAX_SEARCH_LIMIT))
+    folded = [q.casefold() for q in clean]
+    started = time.perf_counter()
+    results = []
+
+    for path in iter_search_files():
+        try:
+            text = read_text_file(path)
+        except Exception:
+            continue
+
+        haystack = text.casefold()
+        hits = []
+        for order, needle in enumerate(folded):
+            idx = haystack.find(needle)
+            if idx >= 0:
+                # Earlier queries are more important; longer matches are more specific.
+                score = (len(folded) - order) * 100 + min(len(needle), 120)
+                hits.append((score, idx, clean[order]))
+
+        if not hits:
+            continue
+
+        hits.sort(key=lambda item: (-item[0], item[1]))
+        best_score, anchor, _ = hits[0]
+        score = sum(item[0] for item in hits)
+        matched = [item[2] for item in hits]
+        max_len = max(len(item[2]) for item in hits)
+
+        results.append({
+            "path": path.relative_to(REPO_ROOT).as_posix(),
+            "offset": anchor,
+            "score": score,
+            "matched_queries": matched,
+            "snippet": _snippet(text, anchor, max_len),
+        })
+
+    results.sort(key=lambda item: (-item["score"], item["path"]))
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    return results[:limit], elapsed_ms
 
 
 def recover_current() -> dict:
@@ -185,7 +256,7 @@ def recover_current() -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "GPTinaOfflineMemory/1.0"
+    server_version = "GPTinaOfflineMemory/1.1"
 
     def _send_json(self, payload, status=HTTPStatus.OK):
         body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
@@ -211,6 +282,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({
                     "ok": True,
                     "service": "GPTina Offline Memory",
+                    "api_version": API_VERSION,
                     "mode": "read_only",
                     "repository_root": str(REPO_ROOT),
                 })
@@ -220,6 +292,8 @@ class Handler(BaseHTTPRequestHandler):
                 cfg = load_config()
                 self._send_json({
                     "ok": True,
+                    "service": "GPTina Offline Memory",
+                    "api_version": API_VERSION,
                     "repository_root": str(REPO_ROOT),
                     "configured_root": cfg.get("repository_root"),
                     "mode": cfg.get("mode"),
@@ -240,6 +314,22 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "path": p.relative_to(REPO_ROOT).as_posix(),
                     "content": read_text_file(p),
+                })
+                return
+
+            if parsed.path == "/search_multi":
+                raw_limit = qs.get("limit", [str(DEFAULT_SEARCH_LIMIT)])[0]
+                try:
+                    limit = int(raw_limit)
+                except ValueError:
+                    limit = DEFAULT_SEARCH_LIMIT
+                results, scan_ms = search_memory_multi(qs.get("q", []), limit=limit)
+                self._send_json({
+                    "ok": True,
+                    "queries": normalize_queries(qs.get("q", [])),
+                    "count": len(results),
+                    "scan_ms": scan_ms,
+                    "results": results,
                 })
                 return
 
@@ -286,7 +376,7 @@ def main():
     args = parser.parse_args()
 
     config = load_config()
-    print("GPTina Offline Memory Server")
+    print(f"GPTina Offline Memory Server {API_VERSION}")
     print(f"Repository reale : {REPO_ROOT}")
     if config.get("repository_root"):
         print(f"Repository config: {config['repository_root']}")
@@ -295,6 +385,7 @@ def main():
     print("Test             : /health")
     print("Recovery         : /recover/current")
     print("Search           : /search?q=testo")
+    print("Multi search     : /search_multi?q=testo&q=altro")
     print("Exact            : /find_exact?q=testo")
     print("Read             : /read?path=rag/index/CURRENT_CONTEXT.md")
     print("Ctrl+C per chiudere.\n")
