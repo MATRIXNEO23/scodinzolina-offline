@@ -59,3 +59,14 @@ del match; il bridge teneva solo i primi 200 caratteri, eliminando proprio
 il testo trovato. Ora la finestra tecnica comincia vicino al match e include
 i valori, con test di regressione. Questo test è una nuova sessione a freddo,
 non una misura della cache tra due turni.
+
+### Un solo slot per la chat locale
+
+Il launcher ora richiede `-np 1`, espone `total_slots` nel log e rifiuta il
+riuso di un motore che dichiara più slot. Anche il benchmark usa un solo slot,
+per confrontare thread/context/batch sulla stessa topologia della chat. È una
+scelta di configurazione per una sessione locale; il beneficio di latenza o
+memoria non è stato ancora misurato sul PC di Alberto. Le segnalazioni esterne
+di `n_slots = 4` non sono state verificate dal log completo del suo processo.
+Non sono stati modificati `-t 2`, `-b 256`, `-ub 128`, `-c 1024`, mmap, mlock,
+cache KV o sampler sulla base di stime non misurate.

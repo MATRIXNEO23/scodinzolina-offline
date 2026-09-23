@@ -19,7 +19,7 @@ from tkinter import (
 from tkinter import ttk
 from urllib.request import Request, urlopen
 
-APP_VERSION = "1.4"
+APP_VERSION = "1.5"
 MEMORY_API_VERSION = "1.2"
 CHAT_API_VERSION = "1.6"
 
@@ -198,6 +198,7 @@ def engine_probe() -> dict:
         "ok": False,
         "model_path": None,
         "n_ctx": None,
+        "total_slots": None,
         "build_info": None,
         "chat_template": False,
         "error": None,
@@ -214,6 +215,7 @@ def engine_probe() -> dict:
         result["model_path"] = props.get("model_path")
         result["build_info"] = props.get("build_info")
         result["n_ctx"] = props.get("default_generation_settings", {}).get("n_ctx")
+        result["total_slots"] = props.get("total_slots")
         result["chat_template"] = bool(props.get("chat_template"))
         result["ok"] = bool(result["model_path"]) and result["n_ctx"] is not None
         if not result["ok"]:
@@ -672,6 +674,12 @@ class App:
                         f"Il motore già attivo usa Context {active_ctx}, ma hai richiesto {context}. "
                         "Premi Ferma, poi AVVIA GPTINA per applicare il nuovo Context."
                     )
+                active_slots = current_engine.get("total_slots")
+                if active_slots is not None and int(active_slots) != 1:
+                    raise RuntimeError(
+                        f"Il motore già attivo usa {active_slots} slot; GPTina richiede 1 slot. "
+                        "Premi Ferma, poi AVVIA GPTINA per applicare il nuovo parametro."
+                    )
                 self.emit(
                     "log",
                     "Motore llama.cpp già attivo e compatibile. "
@@ -689,6 +697,7 @@ class App:
                     "-t", str(threads),
                     "-tb", str(threads),
                     "-c", str(context),
+                    "-np", "1",
                     "-n", str(predict),
                     "-b", "256",
                     "-ub", "128",
@@ -701,11 +710,15 @@ class App:
 
             props = request_json("http://127.0.0.1:5001/props", timeout=4.0)
             n_ctx = props.get("default_generation_settings", {}).get("n_ctx")
+            total_slots = props.get("total_slots")
             self.emit(
                 "log",
-                f"Motore OK · ctx={n_ctx} · template chat={'SI' if props.get('chat_template') else 'NO'} · "
+                f"Motore OK · ctx={n_ctx} · slot={total_slots if total_slots is not None else 'n/d'} · "
+                f"template chat={'SI' if props.get('chat_template') else 'NO'} · "
                 f"build={props.get('build_info')}",
             )
+            if total_slots is not None and int(total_slots) != 1:
+                raise RuntimeError(f"Il motore ha esposto {total_slots} slot invece di 1.")
             if int(n_ctx or 0) != context:
                 self.emit(
                     "log",

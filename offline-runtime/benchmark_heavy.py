@@ -150,11 +150,16 @@ def main():
                 command = [str(args.engine), "-m", str(args.model), "--host", "127.0.0.1",
                            "--port", str(args.port), "-t", str(threads), "-tb", str(threads),
                            "-c", str(context), "-b", str(batch), "-ub", str(ubatch),
+                           "-np", "1",
                            "-ngl", "0", "--flash-attn", "off", "--jinja"]
                 with args.output.open("a", encoding="utf-8") as out, args.output.with_suffix(".engine.log").open("a", encoding="utf-8") as log:
                     proc = subprocess.Popen(command, stdout=log, stderr=log)
                     try:
                         wait_ready(proc, args.port)
+                        with urlopen(f"http://127.0.0.1:{args.port}/props", timeout=4) as response:
+                            slots = json.load(response).get("total_slots")
+                        if slots is not None and int(slots) != 1:
+                            raise RuntimeError(f"llama-server exposed {slots} slots, expected 1")
                         for phase in ("cold", "warm"):
                             result = one_turn(proc, args.port)
                             record = {"at": datetime.now(timezone.utc).isoformat(),
@@ -162,6 +167,7 @@ def main():
                                       "model_bytes": args.model.stat().st_size,
                                       "engine": str(args.engine), "threads": threads,
                                       "context": context, "batch": batch, "ubatch": ubatch,
+                                      "slots_requested": 1, "slots_reported": slots,
                                       "phase": phase, **result}
                             out.write(json.dumps(record, ensure_ascii=False) + "\n")
                             out.flush()
