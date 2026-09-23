@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 GPTina Offline Chat Bridge
-Local, read-only RAG bridge between GPTina Offline Memory and KoboldCpp.
+Local, read-only RAG bridge between GPTina Offline Memory and a local OpenAI-compatible inference engine.
 
 - Memory:   http://127.0.0.1:8765
-- Kobold:   http://127.0.0.1:5001
+- Engine:   http://127.0.0.1:5001
 - Chat UI:  http://127.0.0.1:8766
 
 No third-party Python dependencies.
@@ -34,17 +34,17 @@ MEMORY_SERVER_SCRIPT = SCRIPT_DIR / "gptina_memory_server.py"
 
 DEFAULT_CONFIG = {
     "memory_base": "http://127.0.0.1:8765",
-    "kobold_base": "http://127.0.0.1:5001",
+    "engine_base": "http://127.0.0.1:5001",
     "chat_host": "127.0.0.1",
     "chat_port": 8766,
-    "model": "koboldcpp",
-    "max_tokens": 220,
+    "model": "local",
+    "max_tokens": 160,
     "temperature": 0.72,
     "top_p": 0.90,
     "history_messages": 4,
-    "history_chars": 2400,
-    "memory_items": 4,
-    "memory_snippet_chars": 360,
+    "history_chars": 1800,
+    "memory_items": 3,
+    "memory_snippet_chars": 320,
 }
 
 ITALIAN_STOPWORDS = {
@@ -101,8 +101,17 @@ def http_json(url: str, *, method: str = "GET", payload=None, timeout: float = 8
         raise RuntimeError(f"Risposta non JSON da {url}: {body[:500]}") from exc
 
 
+def endpoint_ok(url: str, timeout: float = 2.0) -> bool:
+    req = Request(url, headers={"Accept": "application/json"})
+    try:
+        with urlopen(req, timeout=timeout) as response:
+            return 200 <= response.status < 300
+    except Exception:
+        return False
+
+
 def service_status(cfg: dict) -> dict:
-    status = {"memory": False, "kobold": False}
+    status = {"memory": False, "engine": False}
     try:
         m = http_json(cfg["memory_base"].rstrip("/") + "/health", timeout=2.0)
         status["memory"] = bool(m.get("ok"))
@@ -110,14 +119,21 @@ def service_status(cfg: dict) -> dict:
     except Exception as exc:
         status["memory_error"] = str(exc)
 
-    try:
-        k = http_json(cfg["kobold_base"].rstrip("/") + "/api/extra/version", timeout=2.0)
-        status["kobold"] = True
-        status["kobold_detail"] = k
-    except Exception as exc:
-        status["kobold_error"] = str(exc)
-    return status
+    base = cfg.get("engine_base", cfg.get("kobold_base", "http://127.0.0.1:5001")).rstrip("/")
+    if endpoint_ok(base + "/health", timeout=2.0):
+        status["engine"] = True
+        status["engine_kind"] = "llama.cpp/openai-compatible"
+    else:
+        try:
+            k = http_json(base + "/api/extra/version", timeout=2.0)
+            status["engine"] = True
+            status["engine_kind"] = "koboldcpp"
+            status["engine_detail"] = k
+        except Exception as exc:
+            status["engine_error"] = str(exc)
 
+    status["kobold"] = status["engine"]
+    return status
 
 def ensure_memory_server(cfg: dict) -> bool:
     if service_status(cfg).get("memory"):
@@ -270,7 +286,7 @@ def trim_history(history, cfg: dict) -> list[dict]:
     return list(reversed(kept))
 
 
-def call_kobold(user_text: str, history, system_prompt: str, cfg: dict) -> str:
+def call_engine(user_text: str, history, system_prompt: str, cfg: dict) -> str:
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(trim_history(history, cfg))
     messages.append({"role": "user", "content": user_text})
@@ -285,7 +301,7 @@ def call_kobold(user_text: str, history, system_prompt: str, cfg: dict) -> str:
     }
 
     data = http_json(
-        cfg["kobold_base"].rstrip("/") + "/v1/chat/completions",
+        cfg.get("engine_base", cfg.get("kobold_base", "http://127.0.0.1:5001")).rstrip("/") + "/v1/chat/completions",
         method="POST",
         payload=payload,
         timeout=300.0,
@@ -294,11 +310,11 @@ def call_kobold(user_text: str, history, system_prompt: str, cfg: dict) -> str:
     try:
         text = data["choices"][0]["message"]["content"]
     except Exception as exc:
-        raise RuntimeError(f"Formato risposta KoboldCpp inatteso: {json.dumps(data)[:800]}") from exc
+        raise RuntimeError(f"Formato risposta motore inatteso: {json.dumps(data)[:800]}") from exc
 
     text = str(text).strip()
     if not text:
-        raise RuntimeError("KoboldCpp ha restituito una risposta vuota.")
+        raise RuntimeError("Il motore locale ha restituito una risposta vuota.")
     return text
 
 
@@ -312,7 +328,7 @@ def process_chat(user_text: str, history, cfg: dict) -> dict:
     live = fetch_live_summary(cfg)
     memories = retrieve_memory(user_text, cfg)
     system_prompt = build_system_prompt(live, memories, cfg)
-    answer = call_kobold(user_text, history, system_prompt, cfg)
+    answer = call_engine(user_text, history, system_prompt, cfg)
 
     return {
         "assistant": answer,
@@ -399,9 +415,9 @@ def main():
         print(f"[GPTina Chat] Memory runtime: {'OK' if ok else 'NON RAGGIUNGIBILE'}")
 
     status = service_status(cfg)
-    print(f"[GPTina Chat] KoboldCpp: {'OK' if status.get('kobold') else 'NON RAGGIUNGIBILE'}")
+    print(f"[GPTina Chat] Motore locale: {'OK' if status.get('engine') else 'NON RAGGIUNGIBILE'}")
     if not status.get("kobold"):
-        print("[GPTina Chat] Avvia KoboldCpp con il modello GGUF prima di scrivere in chat.")
+        print("[GPTina Chat] Avvia il motore locale prima di scrivere in chat.")
 
     host = args.host or cfg.get("chat_host", "127.0.0.1")
     port = args.port or int(cfg.get("chat_port", 8766))

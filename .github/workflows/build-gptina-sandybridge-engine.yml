@@ -1,0 +1,82 @@
+name: Build GPTina Sandy Bridge Engine
+
+on:
+  push:
+    paths:
+      - ".github/workflows/build-gptina-sandybridge-engine.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LLAMA_COMMIT: 6e60f35608ec6918b44a9839c0c433687165f086
+
+jobs:
+  build-engine:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout GPTina offline
+        uses: actions/checkout@v4
+
+      - name: Checkout llama.cpp pinned source
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ env.LLAMA_COMMIT }}
+          path: _llama
+          fetch-depth: 1
+
+      - name: Configure CPU multi-variant build
+        shell: pwsh
+        run: |
+          cmake -S _llama -B _llama/build -G "Visual Studio 17 2022" -A x64 `
+            -DGGML_NATIVE=OFF `
+            -DGGML_BACKEND_DL=ON `
+            -DGGML_CPU_ALL_VARIANTS=ON `
+            -DGGML_OPENMP=OFF `
+            -DGGML_CURL=OFF `
+            -DLLAMA_BUILD_SERVER=ON `
+            -DLLAMA_BUILD_TESTS=OFF `
+            -DLLAMA_BUILD_EXAMPLES=OFF
+
+      - name: Build llama-server
+        shell: pwsh
+        run: cmake --build _llama/build --config Release --target llama-server --parallel 2
+
+      - name: Verify Sandy Bridge backend
+        shell: pwsh
+        run: |
+          $bin = "_llama/build/bin/Release"
+          if (!(Test-Path "$bin/llama-server.exe")) { throw "llama-server.exe missing" }
+          $sandy = Get-ChildItem $bin -Filter "*sandybridge*" -File
+          if (!$sandy) { throw "Sandy Bridge CPU backend missing" }
+          $sandy | ForEach-Object { Write-Host $_.Name }
+
+      - name: Package portable engine
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force package | Out-Null
+          Copy-Item "_llama/build/bin/Release/*" package -Recurse
+          Copy-Item "_llama/LICENSE" "package/LLAMA_CPP_LICENSE.txt"
+          Compress-Archive -Path "package/*" -DestinationPath "gptina-llama-sandybridge-engine.zip" -Force
+
+      - name: Upload engine artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gptina-llama-sandybridge-engine
+          path: gptina-llama-sandybridge-engine.zip
+          if-no-files-found: error
+
+      - name: Publish downloadable engine release
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ env.RELEASE_TAG }}"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --target "${{ github.sha }}" --title "GPTina Offline Engine v1" --notes "Pinned llama.cpp CPU build with x64 dynamic CPU variants including Sandy Bridge."
+          }
+          gh release upload $tag "gptina-llama-sandybridge-engine.zip" --clobber

@@ -17,3 +17,9 @@ rag/index/*.rebuild-wal
 rag/index/*.rebuild-shm
 __pycache__/
 rag/__pycache__/
+
+# GPTina Offline local runtime
+offline-runtime/engine/
+offline-runtime/logs/
+offline-runtime/.gptina_app_config.json
+offline-runtime/GPTinaOffline.exe

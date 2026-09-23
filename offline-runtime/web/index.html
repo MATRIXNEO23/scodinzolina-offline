@@ -28,12 +28,12 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <header>
   <h1>GPTina Offline</h1>
   <span id="memory" class="badge">memoria…</span>
-  <span id="kobold" class="badge">Qwen…</span>
+  <span id="engine" class="badge">motore…</span>
 </header>
 <div id="chat">
   <div class="msg assistant">Sono pronta. La memoria viene recuperata automaticamente dalla copia offline prima di ogni risposta.</div>
 </div>
-<div id="hint">Locale: chat 127.0.0.1:8766 · memoria 8765 · KoboldCpp 5001</div>
+<div id="hint">Locale: chat 127.0.0.1:8766 · memoria 8765 · motore 5001</div>
 <form id="form">
   <textarea id="input" placeholder="Scrivi qui…" autofocus></textarea>
   <button id="send" type="submit">Invia</button>
@@ -64,11 +64,11 @@ async function refreshStatus(){
     const r=await fetch('/status',{cache:'no-store'});
     const d=await r.json();
     const m=document.getElementById('memory');
-    const k=document.getElementById('kobold');
+    const k=document.getElementById('engine');
     m.textContent=d.memory?'memoria OK':'memoria OFF';
-    k.textContent=d.kobold?'Qwen OK':'Qwen OFF';
+    k.textContent=d.engine?'motore OK':'motore OFF';
     m.className='badge '+(d.memory?'ok':'bad');
-    k.className='badge '+(d.kobold?'ok':'bad');
+    k.className='badge '+(d.engine?'ok':'bad');
   }catch(e){}
 }
 refreshStatus();
