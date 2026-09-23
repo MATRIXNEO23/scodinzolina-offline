@@ -666,7 +666,17 @@ class App:
                         f"Un motore è già attivo con '{active}', ma hai selezionato '{model.name}'. "
                         "Ferma il vecchio motore e riprova."
                     )
-                self.emit("log", "Motore llama.cpp già attivo e compatibile.")
+                active_ctx = int(current_engine.get("n_ctx") or 0)
+                if active_ctx and active_ctx != context:
+                    raise RuntimeError(
+                        f"Il motore già attivo usa Context {active_ctx}, ma hai richiesto {context}. "
+                        "Premi Ferma, poi AVVIA GPTINA per applicare il nuovo Context."
+                    )
+                self.emit(
+                    "log",
+                    "Motore llama.cpp già attivo e compatibile. "
+                    "Per cambiare thread/context bisogna prima fermarlo."
+                )
             else:
                 self.emit("log", f"Modello: {model.name}")
                 self.emit("log", f"CPU: {threads} thread · context {context} · max risposta {predict}")

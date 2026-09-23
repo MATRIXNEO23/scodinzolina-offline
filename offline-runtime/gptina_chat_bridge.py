@@ -409,7 +409,8 @@ def count_chat_tokens(messages: list[dict], cfg: dict) -> int:
 
 def approximate_tokens(messages: list[dict]) -> int:
     chars = sum(len(str(item.get("content", ""))) for item in messages)
-    return max(1, int(chars / 3.4) + 24)
+    # Conservative fallback if llama.cpp tokenization endpoints are unavailable.
+    return max(1, int(chars / 3.0) + 32)
 
 
 def _count_tokens_safe(messages: list[dict], cfg: dict) -> tuple[int, bool]:
@@ -489,6 +490,11 @@ def fit_messages_to_context(
             working_live["latest_summary"] = _truncate(summary, 220)
             working_live["next_action"] = _truncate(action, 140)
             adjustments.append("live_summary_shortened")
+            continue
+
+        if working_memories:
+            working_memories = []
+            adjustments.append("memory_removed")
             continue
 
         # At this point only essential system text + current user turn remain.
@@ -700,6 +706,7 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed_path = self.path.split("?", 1)[0]
+        cfg = load_config()
 
         if parsed_path in {"/", "/index.html"}:
             index = WEB_DIR / "index.html"
@@ -718,16 +725,19 @@ class ChatHandler(BaseHTTPRequestHandler):
             return
 
         if parsed_path == "/status":
-            self.send_json({"ok": True, "api_version": API_VERSION, **service_status(self.cfg)})
+            self.send_json({"ok": True, "api_version": API_VERSION, **service_status(cfg)})
             return
 
         if parsed_path == "/diagnostics":
-            self.send_json({"ok": True, "api_version": API_VERSION, **diagnostics(self.cfg)})
+            self.send_json({"ok": True, "api_version": API_VERSION, **diagnostics(cfg)})
             return
 
         self.send_json({"ok": False, "error": "Endpoint non trovato."}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self):
+        cfg = load_config()
+        stream_started = False
+
         if self.path not in {"/chat", "/chat/stream"}:
             self.send_json({"ok": False, "error": "Endpoint non trovato."}, HTTPStatus.NOT_FOUND)
             return
@@ -741,7 +751,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             history = payload.get("history", [])
 
             if self.path == "/chat":
-                result = process_chat(message, history, self.cfg)
+                result = process_chat(message, history, cfg)
                 self.send_json({"ok": True, **result})
                 return
 
@@ -750,8 +760,9 @@ class ChatHandler(BaseHTTPRequestHandler):
             if len(message) > 5000:
                 raise ValueError("Messaggio troppo lungo per il bridge locale.")
 
-            prepared = prepare_chat(message, history, self.cfg)
+            prepared = prepare_chat(message, history, cfg)
             self.send_ndjson_headers()
+            stream_started = True
             self.send_ndjson({
                 "type": "meta",
                 "memory_sources": [item.get("path") for item in prepared["memories"] if item.get("path")],
@@ -771,7 +782,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             content_chars = 0
 
             try:
-                for event in iter_engine_stream(prepared["messages"], self.cfg):
+                for event in iter_engine_stream(prepared["messages"], cfg):
                     if event.get("timings"):
                         timings = event.get("timings")
                     if event.get("usage"):
@@ -809,7 +820,9 @@ class ChatHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             if self.path == "/chat/stream":
                 try:
-                    self.send_ndjson_headers()
+                    if not stream_started:
+                        self.send_ndjson_headers()
+                        stream_started = True
                     self.send_ndjson({"type": "error", "error": str(exc)})
                 except Exception:
                     pass
@@ -818,7 +831,9 @@ class ChatHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             if self.path == "/chat/stream":
                 try:
-                    self.send_ndjson_headers()
+                    if not stream_started:
+                        self.send_ndjson_headers()
+                        stream_started = True
                     self.send_ndjson({"type": "error", "error": str(exc)})
                 except Exception:
                     pass
