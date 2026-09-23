@@ -7,10 +7,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   LLAMA_COMMIT: 6e60f35608ec6918b44a9839c0c433687165f086
+  RELEASE_TAG: gptina-engine-v1
 
 jobs:
   build-engine:
@@ -27,7 +28,7 @@ jobs:
           path: _llama
           fetch-depth: 1
 
-      - name: Configure CPU multi-variant build
+      - name: Configure Sandy Bridge CPU build
         shell: pwsh
         run: |
           cmake -S _llama -B _llama/build -G "Ninja Multi-Config" `
@@ -81,6 +82,6 @@ jobs:
           $tag = "${{ env.RELEASE_TAG }}"
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --target "${{ github.sha }}" --title "GPTina Offline Engine v1" --notes "Pinned llama.cpp CPU build with x64 dynamic CPU variants including Sandy Bridge."
+            gh release create $tag --target "${{ github.sha }}" --title "GPTina Offline Engine v1" --notes "Pinned llama.cpp CPU build targeting Sandy Bridge: SSE4.2 + AVX, without AVX2/FMA/F16C."
           }
           gh release upload $tag "gptina-llama-sandybridge-engine.zip" --clobber

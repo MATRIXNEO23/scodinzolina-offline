@@ -40,7 +40,7 @@ Dopo il primo test confrontare 2 e 4 thread usando i token/sec reali.
 
 Il workflow `.github/workflows/build-gptina-sandybridge-engine.yml` costruisce un `llama-server.exe` CPU x64 da una versione di llama.cpp fissata.
 
-La build abilita le varianti CPU dinamiche e verifica che sia presente la variante **Sandy Bridge**.
+La build è mirata a **Sandy Bridge**: SSE4.2 + AVX, con AVX2/FMA/F16C disattivati, così l'eseguibile resta compatibile con l'i3-2100.
 
 Su `main` il workflow pubblica il pacchetto:
 
