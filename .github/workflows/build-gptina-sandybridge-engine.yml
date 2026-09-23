@@ -33,9 +33,14 @@ jobs:
           cmake -S _llama -B _llama/build -G "Ninja Multi-Config" `
             -D CMAKE_TOOLCHAIN_FILE=cmake/x64-windows-llvm.cmake `
             -DGGML_NATIVE=OFF `
-            -DGGML_BACKEND_DL=ON `
-            -DGGML_CPU_ALL_VARIANTS=ON `
             -DGGML_OPENMP=OFF `
+            -DGGML_SSE42=ON `
+            -DGGML_AVX=ON `
+            -DGGML_AVX_VNNI=OFF `
+            -DGGML_AVX2=OFF `
+            -DGGML_BMI2=OFF `
+            -DGGML_FMA=OFF `
+            -DGGML_F16C=OFF `
             -DGGML_CURL=OFF `
             -DLLAMA_BUILD_SERVER=ON `
             -DLLAMA_BUILD_TESTS=OFF `
@@ -45,14 +50,12 @@ jobs:
         shell: pwsh
         run: cmake --build _llama/build --config Release --target llama-server --parallel 2
 
-      - name: Verify Sandy Bridge backend
+      - name: Verify Sandy Bridge executable
         shell: pwsh
         run: |
           $bin = "_llama/build/bin/Release"
           if (!(Test-Path "$bin/llama-server.exe")) { throw "llama-server.exe missing" }
-          $sandy = Get-ChildItem $bin -Filter "*sandybridge*" -File
-          if (!$sandy) { throw "Sandy Bridge CPU backend missing" }
-          $sandy | ForEach-Object { Write-Host $_.Name }
+          & "$bin/llama-server.exe" --version
 
       - name: Package portable engine
         shell: pwsh
