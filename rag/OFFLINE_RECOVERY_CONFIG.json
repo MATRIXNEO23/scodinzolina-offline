@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "owner": "gptina",
+  "kind": "gptina_offline_recovery_config",
+  "mode": "offline_mirror",
+  "repository_root": "C:\\Users\\matri\\Documents\\GitHub\\scodinzolina-offline",
+  "offline_repository": "MATRIXNEO23/scodinzolina-offline",
+  "canonical_upstream": "MATRIXNEO23/scodinzolina-conntinuity",
+  "recovery_entrypoint": "rag/GPTINA_AUTO_RECOVERY_PROMPT.md",
+  "access_policy": "read_only_recovery",
+  "sync_policy": "manual_only",
+  "network_required_for_recovery": false,
+  "notes": [
+    "All recovery paths are relative to repository_root.",
+    "This offline copy is a replica, not the canonical source of truth.",
+    "Do not push or write back to canonical_upstream from the local/offline instance.",
+    "Filesystem access must be provided by the local runtime; this config does not grant it."
+  ]
+}
