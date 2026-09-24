@@ -202,7 +202,9 @@ document.getElementById('form').addEventListener('submit',async ev=>{
     if(doneMeta && doneMeta.finish_reason==='length'){
       addSmall('metrics','La risposta ha raggiunto Max risposta ed è incompleta. Aumenta il limite nel launcher per una risposta più lunga.');
     }
-    history.push({role:'user',content:text},{role:'assistant',content:assistantText});
+    history.push({role:'user',content:text,
+      prompt_content:meta?.memory_route==='technical'?meta.prompt_user_content:undefined},
+      {role:'assistant',content:assistantText});
     while(history.length>8)history.shift();
 
   }catch(err){

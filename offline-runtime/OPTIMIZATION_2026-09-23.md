@@ -106,6 +106,27 @@ restano ipotesi. La documentazione llama.cpp distingue `-t` (generazione) e
 `-tb` (prompt/batch) e descrive la cache del prefisso comune nello stesso
 slot; non dimostra un vantaggio sul PC di Alberto senza questa misura.
 
+### Tre turni tecnici dopo la history di due scambi
+
+Nel log reale del 24 settembre, il primo turno senza fonte ha 120 token,
+`cache_n=0`, `prompt_n=120`, primo token 36283 ms. Il secondo recupera
+`TECHNICAL_RUNTIME_CONTEXT.md`, ha 235 token, `cache_n=93`, `prompt_n=142`,
+primo token 39577 ms. Il terzo conserva quattro messaggi di history e la
+stessa fonte, ma ha 289 token, `cache_n=106`, `prompt_n=183`, primo token
+59633 ms. I tre `system_sha256` sono diversi. La history di due scambi è
+attiva; è il frammento RAG variabile nel system a rompere il prefisso.
+
+Il candidato rende fisso il system tecnico. Inserisce il frammento breve
+recuperato nel turno utente corrente e trasmette alla UI il testo effettivo
+inviato al motore, da conservare come history tecnica invisibile nella chat.
+Le domande visibili e la history autobiografica mantengono il testo originale;
+il RAG resta limitato alle fonti tecniche. Dopo la risposta al primo turno,
+il secondo dovrebbe riusare il prompt precedente anche se compare una nuova
+fonte; il terzo dovrebbe conservare anche il RAG del secondo. Questa è una
+previsione del codice: first-token e `cache_n` sul PC sono ancora da misurare.
+Il limite di due scambi tecnici può ancora interrompere il prefisso dal
+quarto turno e il context fitter può scartare coppie più vecchie.
+
 ### Risultato del benchmark sul PC: prefill-threads
 
 Alberto ha eseguito il profilo sul medesimo GGUF Q4_K_M (SHA-256

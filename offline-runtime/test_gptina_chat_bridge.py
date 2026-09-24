@@ -26,7 +26,8 @@ class BridgeTests(unittest.TestCase):
             [{"path": "offline-runtime/README.md", "snippet": "thread e context"}], cfg,
         )
         self.assertNotIn("relazione privata", prompt)
-        self.assertIn("thread e context", prompt)
+        self.assertEqual(prompt, mod.build_system_prompt({}, [], cfg))
+        self.assertNotIn("thread e context", prompt)
         self.assertNotIn("Precedenza: correzione corrente", prompt)
 
     def test_technical_route_uses_one_short_source_and_no_personal_history(self):
@@ -48,6 +49,34 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(calls, [("technical", 1, 200)])
         self.assertEqual(len(prepared["messages"]), 2)
         self.assertLess(len(prepared["messages"][0]["content"]), 550)
+        self.assertIn("[FONTE TECNICA RECUPERATA", prepared["messages"][-1]["content"])
+
+    def test_technical_rag_is_retained_in_history_without_changing_system(self):
+        cfg = dict(mod.DEFAULT_CONFIG)
+        saved = mod.retrieve_memory, mod.engine_context_size, mod._count_tokens_safe
+        try:
+            sources = iter([[], [{"path": "TECH.md", "snippet": "i3-2100 AVX"}],
+                            [{"path": "TECH.md", "snippet": "-t 2"}]])
+            mod.retrieve_memory = lambda *args, **kwargs: (next(sources), 1)
+            mod.engine_context_size = lambda _cfg: 1024
+            mod._count_tokens_safe = lambda messages, _cfg: (200, False)
+            first = mod.prepare_chat("Quale CPU?", [], cfg)
+            second = mod.prepare_chat("Supporta AVX?", [
+                {"role": "user", "content": "Quale CPU?", "prompt_content": first["messages"][-1]["content"]},
+                {"role": "assistant", "content": "i3-2100"}], cfg)
+            third = mod.prepare_chat("Quali thread?", [
+                {"role": "user", "content": "Quale CPU?", "prompt_content": first["messages"][-1]["content"]},
+                {"role": "assistant", "content": "i3-2100"},
+                {"role": "user", "content": "Supporta AVX?", "prompt_content": second["messages"][-1]["content"]},
+                {"role": "assistant", "content": "Sì"}], cfg)
+        finally:
+            mod.retrieve_memory, mod.engine_context_size, mod._count_tokens_safe = saved
+        self.assertEqual(first["messages"][0], second["messages"][0])
+        self.assertEqual(second["messages"][0], third["messages"][0])
+        self.assertEqual(second["messages"][1]["content"], first["messages"][-1]["content"])
+        self.assertEqual(third["messages"][3]["content"], second["messages"][-1]["content"])
+        self.assertIn("i3-2100 AVX", third["messages"][3]["content"])
+        self.assertIn("-t 2", third["messages"][-1]["content"])
 
     def test_runtime_parameter_question_stays_in_technical_route(self):
         cfg = dict(mod.DEFAULT_CONFIG)

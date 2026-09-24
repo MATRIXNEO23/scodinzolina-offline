@@ -19,9 +19,9 @@ from tkinter import (
 from tkinter import ttk
 from urllib.request import Request, urlopen
 
-APP_VERSION = "1.7"
+APP_VERSION = "1.8"
 MEMORY_API_VERSION = "1.2"
-CHAT_API_VERSION = "1.8"
+CHAT_API_VERSION = "1.9"
 
 SCRIPT_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 ENGINE_EXE = SCRIPT_DIR / "engine" / "llama-server.exe"
