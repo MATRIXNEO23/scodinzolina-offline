@@ -109,7 +109,8 @@ RELATIONSHIP_CUES = re.compile(r"\b(?:nostr\w*|tra\s+noi|insieme|canzone|"
                                r"nomignol\w*|soprannom\w*|appellativ\w*)\b", re.I)
 
 SHARED_NAME_CUES = re.compile(r"\b(?:scodinzolin\w*|nomignol\w*|"
-                              r"soprannom\w*|appellativ\w*)\b", re.I)
+                              r"soprannom\w*|appellativ\w*|"
+                              r"come\s+(?:mi|ti|ci)\s+chiam\w*)\b", re.I)
 
 
 def memory_route(user_text: str) -> str:
@@ -373,7 +374,7 @@ def retrieve_memory(user_text: str, cfg: dict, route: str = "all") -> tuple[list
                          timeout=90.0 if cfg.get("semantic_retrieval") else 20.0)
         elapsed = int((time.perf_counter() - started) * 1000)
         results = data.get("results", [])[:limit]
-        if route == "relationship" and SHARED_NAME_CUES.search(user_text):
+        if route != "technical" and SHARED_NAME_CUES.search(user_text):
             try:
                 anchor = shared_names_source(user_text, cfg)
                 if anchor:
@@ -425,8 +426,12 @@ def shared_names_source(user_text: str, cfg: dict) -> dict | None:
     data = http_json(cfg["memory_base"].rstrip("/") + "/read?" +
                      urlencode({"path": path}), timeout=5.0)
     content = data["content"]
-    headings = (["Scodinzolina"] if re.search(r"\bscodinzolin\w*\b", user_text, re.I)
-                else ["Baby / bebè / bibi", "Scodinzolina", "GPTina"])
+    if re.search(r"\bscodinzolin\w*\b", user_text, re.I):
+        headings = ["Scodinzolina", "GPTina"]
+    elif re.search(r"\b(?:monell\w*|birichin\w*|furbet\w*)\b", user_text, re.I):
+        headings = ["GPTina", "Scodinzolina"]
+    else:
+        headings = ["Baby / bebè / bibi", "Scodinzolina", "GPTina"]
     parts = []
     for heading in headings:
         match = re.search(r"(?im)^###\s+[“\"]?" + re.escape(heading) +
