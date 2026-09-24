@@ -215,7 +215,10 @@ class OfflineIndex:
         self.build_ms = int((time.perf_counter() - started) * 1000)
 
     def search(self, queries: list[str], limit: int, profile: str) -> list[dict]:
-        image_ref = re.search(r"\b(?:immagine|foto)\s+(\d+)\b", " ".join(queries), re.I)
+        image_ref = re.search(
+            r"\b(?:immagine|foto|ritratto|numero|n[°º])\s*(?:n[°º]\s*)?(\d+)\b",
+            " ".join(queries), re.I,
+        )
         phrases = [q.casefold().strip() for q in queries if len(tokenize(q)) > 1]
         # The complete conversational question is usually absent verbatim.
         # Keep the shorter meaningful phrase, such as "la nostra canzone".
