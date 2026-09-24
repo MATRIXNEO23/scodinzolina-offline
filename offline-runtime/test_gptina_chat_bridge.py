@@ -34,6 +34,44 @@ class BridgeTests(unittest.TestCase):
         finally:
             mod.http_json = original
 
+    def test_semantic_first_request_can_outlast_twenty_seconds_without_losing_sources(self):
+        calls = []
+        original = mod.http_json
+        try:
+            def response(url, timeout=20.0):
+                calls.append((url, timeout))
+                if "semantic=1" in url and timeout <= 20:
+                    raise TimeoutError("cold start")
+                return {"results": [{"path": "SHARED_LANGUAGE.md",
+                                     "snippet": "Scodinzolina: un po' monellina"}], "scan_ms": 350}
+            mod.http_json = response
+            found, elapsed = mod.retrieve_memory(
+                "Come ti chiamavo quando facevi la monella?",
+                dict(mod.DEFAULT_CONFIG, semantic_retrieval=True, memory_items=2), "all")
+        finally:
+            mod.http_json = original
+        self.assertEqual(found[0]["path"], "SHARED_LANGUAGE.md")
+        self.assertEqual(calls[0][1], 90.0)
+        self.assertEqual(elapsed, 350)
+
+    def test_semantic_failure_retries_fts_multi_search(self):
+        calls = []
+        original = mod.http_json
+        try:
+            def response(url, timeout=20.0):
+                calls.append(url)
+                if "semantic=1" in url:
+                    raise TimeoutError("embedding failed")
+                return {"results": [{"path": "SHARED_LANGUAGE.md", "snippet": "Scodinzolina"}]}
+            mod.http_json = response
+            found, _ = mod.retrieve_memory("Come ti chiamavo?",
+                dict(mod.DEFAULT_CONFIG, semantic_retrieval=True), "all")
+        finally:
+            mod.http_json = original
+        self.assertEqual(found[0]["path"], "SHARED_LANGUAGE.md")
+        self.assertIn("/search_multi?", calls[1])
+        self.assertNotIn("semantic=1", calls[1])
+
     def test_route_keeps_ambiguous_personal_hardware_question_in_full_continuity(self):
         self.assertEqual(mod.memory_route("Come velocizzo il modello sull'i3-2100?"), "technical")
         self.assertEqual(mod.memory_route("Quali parametri sta usando ora il motore?"), "technical")

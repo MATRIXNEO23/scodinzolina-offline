@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-API_VERSION = "1.6"
+API_VERSION = "1.7"
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 CONFIG_PATH = REPO_ROOT / "rag" / "OFFLINE_RECOVERY_CONFIG.json"
@@ -360,7 +360,7 @@ def recover_current() -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "GPTinaOfflineMemory/1.6"
+    server_version = "GPTinaOfflineMemory/1.7"
 
     def _send_json(self, payload, status=HTTPStatus.OK):
         body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
@@ -421,7 +421,19 @@ class Handler(BaseHTTPRequestHandler):
                 })
                 return
 
+            if parsed.path == "/semantic/warmup":
+                started = time.perf_counter()
+                candidates = semantic_candidates("memoria", "all", 1)
+                self._send_json({
+                    "ok": True,
+                    "backend": "semantic",
+                    "count": len(candidates),
+                    "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                })
+                return
+
             if parsed.path == "/search_multi":
+                started = time.perf_counter()
                 raw_limit = qs.get("limit", [str(DEFAULT_SEARCH_LIMIT)])[0]
                 try:
                     limit = int(raw_limit)
@@ -455,7 +467,8 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "queries": queries,
                     "count": len(results),
-                    "scan_ms": scan_ms,
+                    "scan_ms": int((time.perf_counter() - started) * 1000),
+                    "lexical_ms": scan_ms,
                     "index_build_ms": build_ms,
                     "backend": backend,
                     "profile": profile,
