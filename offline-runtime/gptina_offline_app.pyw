@@ -9,17 +9,16 @@ import subprocess
 import sys
 import threading
 import time
-import webbrowser
 from pathlib import Path
 from tkinter import (
-    BOTH, END, LEFT, RIGHT, X,
+    BOTH, END, LEFT, RIGHT, X, Y,
     Button, Entry, Frame, Label, StringVar, Text, Tk, Toplevel,
     filedialog, messagebox,
 )
 from tkinter import ttk
 from urllib.request import Request, urlopen
 
-APP_VERSION = "2.2"
+APP_VERSION = "2.3"
 MEMORY_API_VERSION = "1.5"
 CHAT_API_VERSION = "1.11"
 
@@ -92,6 +91,22 @@ def request_json(url: str, timeout: float = 1.5) -> dict:
     req = Request(url, headers={"Accept": "application/json"})
     with urlopen(req, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8", errors="replace"))
+
+
+def chat_stream_events(message: str, history: list[dict]):
+    """Yield bridge NDJSON events without touching Tk from the network thread."""
+    payload = json.dumps({"message": message, "history": history}, ensure_ascii=False).encode("utf-8")
+    req = Request(
+        f"http://127.0.0.1:{PORT_CHAT}/chat/stream",
+        data=payload,
+        headers={"Content-Type": "application/json", "Accept": "application/x-ndjson"},
+        method="POST",
+    )
+    with urlopen(req, timeout=900) as response:
+        for raw in response:
+            line = raw.decode("utf-8", errors="replace").strip()
+            if line:
+                yield json.loads(line)
 
 
 def http_ok(url: str, timeout: float = 1.0) -> bool:
@@ -384,6 +399,213 @@ class DiagnosticsWindow:
             pass
 
 
+class ChatWindow:
+    """Native chat client for the same local streaming bridge as the web UI."""
+
+    def __init__(self, app: "App"):
+        self.app = app
+        self.win = Toplevel(app.root)
+        self.win.title("GPTina Offline — Chat")
+        self.win.geometry("780x680")
+        self.win.minsize(540, 420)
+        self.win.protocol("WM_DELETE_WINDOW", self.hide)
+        self.events = queue.Queue()
+        self.history: list[dict] = []
+        self.busy = False
+        self.meta: dict = {}
+        self.answer = ""
+        self.sources: list[dict] = []
+        self.started = 0.0
+
+        background = "#111318"
+        foreground = "#e9edf3"
+        top = Frame(self.win, bg=background, padx=14, pady=10)
+        top.pack(fill=X)
+        Label(top, text="GPTina Offline", font=("Segoe UI", 15, "bold"),
+              bg=background, fg=foreground).pack(side=LEFT)
+        self.sources_button = Button(top, text="Fonti ultimo turno", command=self.show_sources,
+                                     state="disabled")
+        self.sources_button.pack(side=RIGHT)
+
+        body = Frame(self.win, bg=background)
+        body.pack(fill=BOTH, expand=True)
+        self.transcript = Text(body, wrap="word", state="disabled", bg="#171b22",
+                               fg=foreground, insertbackground=foreground,
+                               font=("Segoe UI", 11), padx=14, pady=12,
+                               relief="flat", borderwidth=0)
+        scroll = ttk.Scrollbar(body, orient="vertical", command=self.transcript.yview)
+        self.transcript.configure(yscrollcommand=scroll.set)
+        self.transcript.pack(side=LEFT, fill=BOTH, expand=True)
+        scroll.pack(side=RIGHT, fill=Y)
+        self.transcript.tag_configure("user", foreground="#8bbcff", font=("Segoe UI", 11, "bold"))
+        self.transcript.tag_configure("assistant", foreground="#a6e3b6", font=("Segoe UI", 11, "bold"))
+        self.transcript.tag_configure("info", foreground="#9aa6b7", font=("Segoe UI", 9))
+        self.transcript.tag_configure("error", foreground="#ff9e9e")
+        self._append("Pronta. La memoria viene recuperata prima di ogni risposta.\n\n", "info")
+
+        bottom = Frame(self.win, bg=background, padx=14, pady=10)
+        bottom.pack(fill=X)
+        self.status = Label(bottom, text="Invio: Enter · Nuova riga: Shift+Enter", anchor="w",
+                            bg=background, fg="#9aa6b7")
+        self.status.pack(fill=X, pady=(0, 6))
+        row = Frame(bottom, bg=background)
+        row.pack(fill=X)
+        self.input = Text(row, height=3, wrap="word", font=("Segoe UI", 11),
+                          bg="#242a34", fg=foreground, insertbackground=foreground,
+                          relief="flat", padx=8, pady=6)
+        self.input.pack(side=LEFT, fill=X, expand=True)
+        self.input.bind("<Return>", self._on_return)
+        self.send_button = Button(row, text="Invia", command=self.send)
+        self.send_button.pack(side=RIGHT, padx=(8, 0))
+        self.input.focus_set()
+        self.win.after(100, self._drain)
+        self.win.after(1000, self._tick)
+
+    def _append(self, value: str, tag: str | None = None):
+        self.transcript.configure(state="normal")
+        self.transcript.insert(END, value, tag)
+        self.transcript.configure(state="disabled")
+        self.transcript.see(END)
+
+    def _on_return(self, event):
+        if event.state & 0x1:  # Shift+Enter inserts a newline.
+            return None
+        self.send()
+        return "break"
+
+    def hide(self):
+        self.win.withdraw()  # Keep the conversation and in-flight response.
+
+    def show(self):
+        self.win.deiconify()
+        self.win.lift()
+        self.input.focus_set()
+
+    def send(self):
+        if self.busy:
+            return
+        message = self.input.get("1.0", "end-1c").strip()
+        if not message:
+            return
+        self.input.delete("1.0", END)
+        self.busy = True
+        self.answer = ""
+        self.meta = {}
+        self.sources = []
+        self.started = time.monotonic()
+        self.send_button.configure(state="disabled")
+        self._append("Tu: ", "user")
+        self._append(message + "\n\n")
+        self.status.configure(text="Recupero memoria e preparo il contesto…")
+        self.pending_message = message
+        threading.Thread(target=self._request_worker,
+                         args=(message, list(self.history)), daemon=True).start()
+
+    def _request_worker(self, message: str, history: list[dict]):
+        try:
+            for event in chat_stream_events(message, history):
+                self.events.put(event)
+        except Exception as exc:
+            self.events.put({"type": "error", "error": str(exc)})
+        finally:
+            self.events.put({"type": "stream_end"})
+
+    def _drain(self):
+        try:
+            while True:
+                event = self.events.get_nowait()
+                kind = event.get("type")
+                if kind == "meta":
+                    self.meta = event
+                    self.sources = event.get("source_details") or []
+                    self.sources_button.configure(state="normal" if self.sources else "disabled")
+                    self.status.configure(text="GPTina sta generando…")
+                elif kind == "token":
+                    if not self.answer:
+                        self._append("GPTina: ", "assistant")
+                    token = str(event.get("text") or "")
+                    self.answer += token
+                    self._append(token)
+                elif kind == "done":
+                    if not self.answer.strip():
+                        self._finish_error("Il motore ha terminato senza produrre testo.")
+                    else:
+                        self._append("\n\n")
+                        self._append(self._metrics(self.meta, event) + "\n\n", "info")
+                        self.history.extend([
+                            {"role": "user", "content": self.pending_message,
+                             "prompt_content": (self.meta.get("prompt_user_content")
+                                                if self.meta.get("memory_route") == "technical" else None)},
+                            {"role": "assistant", "content": self.answer},
+                        ])
+                        self.history = self.history[-8:]
+                        self._finish()
+                elif kind == "error":
+                    self._finish_error(str(event.get("error") or "Errore sconosciuto"))
+                elif kind == "stream_end" and self.busy:
+                    self._finish_error("Connessione terminata prima della risposta completa.")
+        except queue.Empty:
+            pass
+        self.win.after(100, self._drain)
+
+    @staticmethod
+    def _metrics(meta: dict, done: dict) -> str:
+        bits = []
+        if meta.get("memory_route"):
+            bits.append("RAG " + meta["memory_route"])
+        if meta.get("prompt_tokens") is not None:
+            bits.append(f"prompt {meta['prompt_tokens']}/{meta.get('context_size', '?')}")
+        if meta.get("memory_ms") is not None:
+            bits.append(f"memoria {meta['memory_ms']} ms")
+        if meta.get("prepare_ms") is not None:
+            bits.append(f"preparazione {meta['prepare_ms']} ms")
+        if meta.get("prefix_common_tokens") is not None:
+            bits.append(f"prefisso comune {meta['prefix_common_tokens']} token")
+        if done.get("first_token_ms") is not None:
+            bits.append(f"primo token {done['first_token_ms']} ms")
+        timing = done.get("timings") or {}
+        if timing.get("prompt_n") is not None:
+            bits.append(f"ricalcolati {timing['prompt_n']} token")
+        if timing.get("cache_n") is not None:
+            bits.append(f"cache {timing['cache_n']} token")
+        if timing.get("predicted_per_second") is not None:
+            bits.append(f"{float(timing['predicted_per_second']):.2f} tok/s")
+        if timing.get("prompt_per_second") is not None:
+            bits.append(f"prompt {float(timing['prompt_per_second']):.1f} tok/s")
+        if done.get("finish_reason") == "length":
+            bits.append("limite risposta raggiunto")
+        return " · ".join(bits)
+
+    def _finish(self):
+        self.busy = False
+        self.send_button.configure(state="normal")
+        self.status.configure(text="Pronta · Invio: Enter · Nuova riga: Shift+Enter")
+        self.input.focus_set()
+
+    def _finish_error(self, message: str):
+        self._append("\nErrore: " + message + "\n\n", "error")
+        self._finish()
+
+    def _tick(self):
+        if self.busy:
+            seconds = int(time.monotonic() - self.started)
+            self.status.configure(text=f"GPTina sta lavorando… {seconds} s")
+        self.win.after(1000, self._tick)
+
+    def show_sources(self):
+        if not self.sources:
+            return
+        detail = Toplevel(self.win)
+        detail.title("Fonti dell'ultimo turno")
+        detail.geometry("720x460")
+        viewer = Text(detail, wrap="word", font=("Segoe UI", 10), padx=12, pady=10)
+        viewer.pack(fill=BOTH, expand=True)
+        for source in self.sources:
+            viewer.insert(END, f"[{source.get('number')}] {source.get('path')}\n")
+            viewer.insert(END, str(source.get("excerpt") or "") + "\n\n")
+        viewer.configure(state="disabled")
+
+
 class App:
     def __init__(self, root: Tk):
         self.root = root
@@ -397,6 +619,7 @@ class App:
         self.launcher_lines = []
         self.last_services = {}
         self.diagnostics: DiagnosticsWindow | None = None
+        self.chat_window: ChatWindow | None = None
         self.monitor_busy = False
 
         cfg = load_cfg()
@@ -453,7 +676,7 @@ class App:
         row.pack(fill=X, pady=8)
         self.start_button = Button(row, text="AVVIA GPTINA", height=2, command=self.start)
         self.start_button.pack(side=LEFT, fill=X, expand=True, padx=(0, 5))
-        Button(row, text="Apri chat", height=2, command=lambda: webbrowser.open("http://127.0.0.1:8766")).pack(side=LEFT, padx=5)
+        Button(row, text="Apri chat", height=2, command=self.open_chat).pack(side=LEFT, padx=5)
         Button(row, text="Diagnostica / errori", height=2, command=self.open_diagnostics).pack(side=LEFT, padx=5)
         Button(row, text="Ferma", height=2, command=self.stop).pack(side=RIGHT, padx=(5, 0))
 
@@ -506,6 +729,8 @@ class App:
                     self._render_services()
                 elif kind == "engine_label":
                     self.refresh_engine_label()
+                elif kind == "open_chat":
+                    self.open_chat()
         except queue.Empty:
             pass
 
@@ -566,6 +791,12 @@ class App:
             self.diagnostics = DiagnosticsWindow(self)
         else:
             self.diagnostics.show(tab)
+
+    def open_chat(self):
+        if self.chat_window is None or not self.chat_window.win.winfo_exists():
+            self.chat_window = ChatWindow(self)
+        else:
+            self.chat_window.show()
 
     def refresh_engine_label(self):
         text = "Motore: installato" if ENGINE_EXE.exists() else "Motore: NON installato"
@@ -792,8 +1023,8 @@ class App:
             self.emit("log", "Chat streaming: OK")
 
             self.emit("status", "GPTina Offline pronta.")
-            self.emit("log", "Tutto pronto. Apro la chat.")
-            webbrowser.open("http://127.0.0.1:8766")
+            self.emit("log", "Tutto pronto. Apro la chat nell'app.")
+            self.emit("open_chat")
 
         except Exception as exc:
             text = str(exc)

@@ -16,6 +16,41 @@ loader.exec_module(app)
 
 
 class LauncherProfileTests(unittest.TestCase):
+    def test_native_chat_uses_bridge_stream_and_preserves_history(self):
+        captured = {}
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def __iter__(self):
+                return iter([
+                    b'{"type":"meta","memory_route":"relationship"}\n',
+                    b'{"type":"token","text":"Ciao"}\n',
+                    b'{"type":"done","finish_reason":"stop"}\n',
+                ])
+
+        original = app.urlopen
+        try:
+            def fake_open(req, timeout):
+                captured["url"] = req.full_url
+                captured["payload"] = json.loads(req.data.decode("utf-8"))
+                captured["timeout"] = timeout
+                return Response()
+            app.urlopen = fake_open
+            events = list(app.chat_stream_events(
+                "Come stai?", [{"role": "user", "content": "Ciao"}]))
+        finally:
+            app.urlopen = original
+
+        self.assertEqual(captured["url"], "http://127.0.0.1:8766/chat/stream")
+        self.assertEqual(captured["payload"]["history"][0]["content"], "Ciao")
+        self.assertEqual([event["type"] for event in events], ["meta", "token", "done"])
+        self.assertEqual(events[1]["text"], "Ciao")
+
     def test_legacy_local_config_keeps_safe_defaults(self):
         values = dict(app.DEFAULTS, threads="2", context="1024", predict="160")
         options = app.validated_engine_options(values)
