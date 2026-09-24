@@ -299,7 +299,7 @@ def semantic_candidates(question: str, profile: str, limit: int):
 
 
 def combine_candidates(lexical: list[dict], semantic: list[dict], limit: int):
-    """Rank independent evidence paths; keep the best snippet for each path."""
+    """Keep the strongest exact-term result, then use semantic evidence to rerank."""
     strong_phrase = any(item.get("matched_queries") for item in lexical[:2])
     lexical_weight, semantic_weight = (2.0, 1.0) if strong_phrase else (1.0, 2.0)
     scores, items = {}, {}
@@ -309,7 +309,12 @@ def combine_candidates(lexical: list[dict], semantic: list[dict], limit: int):
             scores[path] = scores.get(path, 0.0) + weight / (rank + 2)
             if path not in items or (strong_phrase and group is lexical):
                 items[path] = item
-    return [items[path] for path in sorted(scores, key=lambda p: (-scores[p], p))[:limit]]
+    ranked = sorted(scores, key=lambda p: (-scores[p], p))
+    # A dense match can surface paraphrases, but must not evict the best FTS
+    # source from the tiny context budget. This holds for every memory domain.
+    anchor = lexical[0]["path"] if lexical and limit >= 2 else None
+    paths = ([anchor] if anchor else []) + [path for path in ranked if path != anchor]
+    return [items[path] for path in paths[:limit]]
 
 
 def recover_current() -> dict:
