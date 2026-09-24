@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-API_VERSION = "1.3"
+API_VERSION = "1.4"
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 CONFIG_PATH = REPO_ROOT / "rag" / "OFFLINE_RECOVERY_CONFIG.json"
@@ -325,7 +326,7 @@ def recover_current() -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "GPTinaOfflineMemory/1.3"
+    server_version = "GPTinaOfflineMemory/1.4"
 
     def _send_json(self, payload, status=HTTPStatus.OK):
         body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
@@ -393,12 +394,27 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     limit = DEFAULT_SEARCH_LIMIT
                 profile = qs.get("profile", ["all"])[0]
-                results, scan_ms = search_memory_multi(qs.get("q", []), limit=limit, profile=profile)
+                queries = normalize_queries(qs.get("q", []))
+                if profile in {"all", "visual"} and queries:
+                    try:
+                        from gptina_offline_index import search as indexed_search
+                        results, scan_ms, build_ms = indexed_search(queries, limit, profile)
+                        backend = "fts5_offline_manifest"
+                    except (ImportError, sqlite3.OperationalError):
+                        results, scan_ms = search_memory_multi(queries, limit=limit, profile=profile)
+                        build_ms = 0
+                        backend = "text_fallback"
+                else:
+                    results, scan_ms = search_memory_multi(queries, limit=limit, profile=profile)
+                    build_ms = 0
+                    backend = "text_technical"
                 self._send_json({
                     "ok": True,
-                    "queries": normalize_queries(qs.get("q", [])),
+                    "queries": queries,
                     "count": len(results),
                     "scan_ms": scan_ms,
+                    "index_build_ms": build_ms,
+                    "backend": backend,
                     "profile": profile,
                     "results": results,
                 })

@@ -19,8 +19,8 @@ from tkinter import (
 from tkinter import ttk
 from urllib.request import Request, urlopen
 
-APP_VERSION = "1.9"
-MEMORY_API_VERSION = "1.3"
+APP_VERSION = "2.0"
+MEMORY_API_VERSION = "1.4"
 CHAT_API_VERSION = "1.10"
 
 SCRIPT_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
