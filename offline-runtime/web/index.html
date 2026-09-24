@@ -179,6 +179,18 @@ document.getElementById('form').addEventListener('submit',async ev=>{
           meta=evt;
           if(evt.memory_sources && evt.memory_sources.length){
             sourcesNode=addSmall('sources','Memoria: '+[...new Set(evt.memory_sources)].join(' · '));
+            if(evt.source_details && evt.source_details.length){
+              const details=document.createElement('details');
+              const summary=document.createElement('summary');
+              summary.textContent='Mostra i passaggi recuperati';
+              details.appendChild(summary);
+              evt.source_details.forEach(source=>{
+                const excerpt=document.createElement('div');
+                excerpt.textContent='['+source.number+'] '+source.path+' — '+source.excerpt;
+                details.appendChild(excerpt);
+              });
+              sourcesNode.appendChild(details);
+            }
           }
           responseNode.textContent='GPTina sta generando…';
         }else if(evt.type==='token'){

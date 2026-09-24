@@ -1,5 +1,7 @@
 # GPTina Offline — launcher unico
 
+Audit e alleggerimento della memoria personale: [AUDIT_MEMORY_LIGHT_2026-09-24.md](AUDIT_MEMORY_LIGHT_2026-09-24.md).
+
 Runtime locale per usare un modello GGUF su llama.cpp insieme alla continuity offline di GPTina.
 
 Percorso normale:

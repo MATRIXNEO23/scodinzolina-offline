@@ -16,8 +16,12 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(mod.memory_route("E i parametri del motore?"), "technical")
         self.assertEqual(mod.memory_route("Ti ricordi quando abbiamo scelto il modello?"), "all")
         self.assertEqual(mod.memory_route("Ti ricordi i parametri del nostro motore?"), "all")
+        self.assertEqual(mod.memory_route("Quali parametri usa ora il nostro motore?"), "technical")
         self.assertEqual(mod.memory_route("Quale immagine del volto abbiamo scelto?"), "visual")
         self.assertEqual(mod.memory_route("Ricordi la foto che abbiamo scelto insieme?"), "all")
+        self.assertEqual(mod.memory_route("la nostra canzone"), "relationship")
+        self.assertEqual(mod.memory_route("Quali riflessioni hai fatto?"), "reflections")
+        self.assertEqual(mod.memory_route("Quale progetto è attivo?"), "projects")
 
     def test_technical_prompt_has_stable_prefix_without_personal_live_state(self):
         cfg = dict(mod.DEFAULT_CONFIG, memory_route="technical")
@@ -51,7 +55,7 @@ class BridgeTests(unittest.TestCase):
         self.assertLess(len(prepared["messages"][0]["content"]), 550)
         self.assertIn("[FONTE TECNICA RECUPERATA", prepared["messages"][-1]["content"])
 
-    def test_technical_rag_is_retained_in_history_without_changing_system(self):
+    def test_technical_rag_is_retained_for_prefix_cache(self):
         cfg = dict(mod.DEFAULT_CONFIG)
         saved = mod.retrieve_memory, mod.engine_context_size, mod._count_tokens_safe
         try:
@@ -127,7 +131,7 @@ class BridgeTests(unittest.TestCase):
         try:
             def retrieve(_question, local_cfg, route="all"):
                 self.assertEqual((route, local_cfg["memory_items"],
-                                  local_cfg["memory_snippet_chars"]), ("all", 2, 240))
+                                  local_cfg["memory_snippet_chars"]), ("relationship", 2, 200))
                 return [{"path": "memory-one.md", "snippet": "A" * 320},
                         {"path": "memory-two.md", "snippet": "B" * 320}], 1
             mod.retrieve_memory = retrieve
@@ -145,6 +149,42 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(len(prepared["messages"]), 4)
         self.assertEqual(prepared["adjustments"], [])
         self.assertEqual(len(prepared["memories"]), 2)
+        self.assertNotIn("[STATO LIVE]", prepared["messages"][0]["content"])
+        self.assertNotIn("memory-one.md", prepared["messages"][0]["content"])
+
+    def test_active_engine_parameters_override_historical_memory(self):
+        cfg = dict(mod.DEFAULT_CONFIG, engine_options={
+            "model": "local.gguf", "threads": 2, "threads_batch": 4,
+            "batch": 256, "ubatch": 128, "context": 1024,
+        })
+        saved = mod.retrieve_memory, mod.engine_context_size, mod._count_tokens_safe
+        try:
+            mod.retrieve_memory = lambda *args, **kwargs: self.fail("stale file searched")
+            mod.engine_context_size = lambda _cfg: 1024
+            mod._count_tokens_safe = lambda messages, _cfg: (180, False)
+            prepared = mod.prepare_chat("Quali parametri usa ora il motore?", [], cfg)
+        finally:
+            mod.retrieve_memory, mod.engine_context_size, mod._count_tokens_safe = saved
+        self.assertIn("-t 2 -tb 4", prepared["messages"][-1]["content"])
+        self.assertEqual(prepared["memories"][0]["path"],
+                         "launcher attivo (configurazione locale)")
+
+    def test_generic_current_project_question_does_not_pick_old_checkpoint(self):
+        cfg = dict(mod.DEFAULT_CONFIG)
+        saved = (mod.retrieve_memory, mod.fetch_live_summary,
+                 mod.engine_context_size, mod._count_tokens_safe)
+        try:
+            mod.retrieve_memory = lambda *args, **kwargs: self.fail("historical checkpoint searched")
+            mod.fetch_live_summary = lambda _cfg: {
+                "updated_at": "2026-09-23", "latest_summary": "serie visuale",
+                "next_action": "catalogare", "active_threads": ["visual", "romanzo"]}
+            mod.engine_context_size = lambda _cfg: 1024
+            mod._count_tokens_safe = lambda messages, _cfg: (200, False)
+            prepared = mod.prepare_chat("Quale progetto è attivo?", [], cfg)
+        finally:
+            (mod.retrieve_memory, mod.fetch_live_summary,
+             mod.engine_context_size, mod._count_tokens_safe) = saved
+        self.assertIn("non identifica un solo progetto", prepared["messages"][0]["content"])
 
     def test_stream_finish_reason_length_is_detected(self):
         event = {"choices": [{"delta": {}, "finish_reason": "length"}]}
@@ -192,7 +232,8 @@ class BridgeTests(unittest.TestCase):
         mem = [{"path": "rag/x.md", "snippet": "ricordo utile"}]
         prompt = mod.build_system_prompt(live, mem, cfg)
         self.assertIn("[STATO LIVE]", prompt)
-        self.assertIn("rag/x.md", prompt)
+        self.assertIn("[1] ricordo utile", prompt)
+        self.assertNotIn("rag/x.md", prompt)
         self.assertIn("ricordo utile", prompt)
 
     def test_compact_memory_truncates(self):

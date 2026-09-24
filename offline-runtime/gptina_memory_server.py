@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-API_VERSION = "1.4"
+API_VERSION = "1.5"
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 CONFIG_PATH = REPO_ROOT / "rag" / "OFFLINE_RECOVERY_CONFIG.json"
@@ -38,7 +38,7 @@ MAX_READ_BYTES = 512_000
 DEFAULT_SEARCH_LIMIT = 12
 MAX_SEARCH_LIMIT = 50
 MAX_MULTI_QUERIES = 8
-SEARCH_PROFILES = {"all", "technical", "visual"}
+SEARCH_PROFILES = {"all", "technical", "visual", "relationship", "projects", "reflections"}
 TECHNICAL_PATHS = (
     "offline-runtime/README.md",
     "offline-runtime/AUDIT_2026-09-23.md",
@@ -52,7 +52,7 @@ TECHNICAL_PATHS = (
 
 def profile_allows(path: str, profile: str) -> bool:
     """Restrict files before reading them; the full corpus remains available for recall."""
-    if profile == "all":
+    if profile in {"all", "relationship", "projects", "reflections"}:
         return not (
             path.startswith(("rag/eval/", "rag/memories/tessa/", "rag/memories/ettore/"))
             or path in {"rag/README.md", "rag/memory_manifest.json"}
@@ -62,9 +62,7 @@ def profile_allows(path: str, profile: str) -> bool:
     if profile == "visual":
         return path == "rag/index/GPTINA_VISUAL_CHRONOLOGY.md" or path.startswith(
             "rag/media-links/"
-        ) or (path.startswith("rag/memories/gptina/") and any(
-            cue in path for cue in ("visual", "immagin", "ritratt", "volto", "foto")
-        ))
+        ) or path.startswith("rag/memories/gptina/")
     raise ValueError("Profilo di ricerca non valido.")
 
 
@@ -211,7 +209,7 @@ def search_memory_multi(queries, limit: int = DEFAULT_SEARCH_LIMIT, profile: str
     started = time.perf_counter()
     results = []
     overrides = {}
-    if profile == "all":
+    if profile != "technical":
         try:
             overrides = json.loads(MANIFEST_PATH.read_text(encoding="utf-8")).get("status_overrides", {})
         except (OSError, ValueError):
@@ -228,7 +226,7 @@ def search_memory_multi(queries, limit: int = DEFAULT_SEARCH_LIMIT, profile: str
             continue
 
         relative = path.relative_to(REPO_ROOT).as_posix()
-        if profile == "all" and relative.startswith("rag/memories/"):
+        if profile != "technical" and relative.startswith("rag/memories/"):
             status = overrides.get(relative, {}).get("status", "current")
             header = text[:900].casefold()
             if status in {"superseded", "invalidated"} or (
@@ -253,7 +251,7 @@ def search_memory_multi(queries, limit: int = DEFAULT_SEARCH_LIMIT, profile: str
         score = sum(item[0] for item in hits)
         if profile == "technical" and relative == "offline-runtime/TECHNICAL_RUNTIME_CONTEXT.md":
             score += 1000  # Verified target facts before audit/method notes.
-        if profile == "all":
+        if profile in {"all", "relationship", "projects", "reflections"}:
             # A phrase in the title or source name is more specific than a
             # generic mention in a long transcript or checkpoint.
             title = text[: min(len(text), 180)].casefold()
@@ -395,7 +393,7 @@ class Handler(BaseHTTPRequestHandler):
                     limit = DEFAULT_SEARCH_LIMIT
                 profile = qs.get("profile", ["all"])[0]
                 queries = normalize_queries(qs.get("q", []))
-                if profile in {"all", "visual"} and queries:
+                if profile != "technical" and queries:
                     try:
                         from gptina_offline_index import search as indexed_search
                         results, scan_ms, build_ms = indexed_search(queries, limit, profile)
