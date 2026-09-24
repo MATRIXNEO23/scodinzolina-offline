@@ -9,6 +9,17 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class OfflineIndexTests(unittest.TestCase):
+    def test_supersession_and_owner_boundary(self):
+        source = ROOT / "rag/memories/gptina/2026/09/2026-09-22--correzione-set-riferimento-volto-12-13-19-40.md"
+        memory_id, status, supersedes = index.frontmatter(source.read_text(encoding="utf-8"))
+        self.assertEqual(status, "current")
+        self.assertEqual(memory_id, "gptina-2026-09-22-correzione-set-riferimento-volto-12-13-19-40")
+        self.assertEqual(supersedes, ["gptina-2026-09-18-correzione-set-riferimento-volto-12-13-29-42"])
+        obj = index.OfflineIndex()
+        sources = {row[0] for row in obj.db.execute("SELECT DISTINCT source FROM chunks")}
+        self.assertNotIn("rag/memories/gptina/2026/09/2026-09-18--correzione-set-riferimento-volto-12-13-29-42.md", sources)
+        self.assertFalse(any(path.startswith("rag/memories/tessa/") for path in sources))
+
     def test_canonical_retrieval_gold_sources_remain_reachable(self):
         cases = json.loads((ROOT / "rag/eval/GPTINA_MEMORY_GOLD.json").read_text(encoding="utf-8"))
         for case in cases:

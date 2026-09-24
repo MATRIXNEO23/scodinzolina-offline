@@ -158,13 +158,14 @@ Il ranking lessicale sopra corregge il caso osservato ma non basta per tutto
 il corpus. La versione successiva usa `gptina_offline_index.py` per costruire
 all'avvio del primo recupero personale/visuale un indice SQLite FTS5 **in
 memoria**. Legge fonti, status, priorità e chunking dal manifest tramite il
-lettore canonico già copiato nel repository offline. Non costruisce le
+lettore locale limitato ai campi necessari, realizzato con la libreria standard
+Python. Non richiede PyYAML sul PC. Non costruisce le
 proiezioni canoniche su disco, non richiede rete né il commit di baseline
 storico; il profilo tecnico ristretto resta separato. Se FTS5 manca, il server
 usa il precedente scanner lessicale filtrato.
 
 Nel checkout locale del 24 settembre: 373 versioni correnti candidate, 1652
-chunk indicizzati, 1.945.600 byte di pagine SQLite, build 197 ms su questa
+chunk indicizzati, circa 2 MB di pagine SQLite, build circa 50 ms su questa
 macchina (non è una misura dell'i3-2100). Le query successive richiedono circa
 0–4 ms qui. Il gold set canonico offre 16 casi `search`: la fonte attesa è
 nei primi 8 in 16/16; nei primi 2 in 14/16 col profilo `all`, prima del

@@ -6,16 +6,18 @@ projection is written to the mirror or to the canonical repository.
 
 from __future__ import annotations
 
+import fnmatch
+import json
 import sqlite3
 import re
-import sys
 import time
 from pathlib import Path
 from threading import Lock
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "rag"))
-import gptina_memory as memory  # noqa: E402 - bundled canonical reader
+MANIFEST = ROOT / "rag/memory_manifest.json"
+WORD_RE = re.compile(r"[0-9A-Za-zÀ-ÖØ-öø-ÿ_]+", re.UNICODE)
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 
 _INDEX = None
 _LOCK = Lock()
@@ -29,47 +31,177 @@ STOPWORDS = {
 }
 
 
+def tokenize(value: str) -> list[str]:
+    return [match.group(0).casefold() for match in WORD_RE.finditer(value)]
+
+
+def frontmatter(text: str) -> tuple[str | None, str, list[str]]:
+    """Read only the three scalar/list keys needed for effective status."""
+    if not text.startswith("---\n"):
+        return None, "current", []
+    end = text.find("\n---\n", 4)
+    if end < 0:
+        return None, "current", []
+    lines = text[4:end].splitlines()
+    values = {}
+    supersedes = []
+    in_supersedes = False
+    for line in lines:
+        if line.startswith("supersedes:"):
+            in_supersedes = True
+            inline = line.partition(":")[2].strip()
+            if inline.startswith("[") and inline.endswith("]"):
+                supersedes.extend(x.strip().strip("\"'") for x in inline[1:-1].split(",") if x.strip())
+            elif inline and inline != "[]":
+                supersedes.append(inline.strip("\"'"))
+            continue
+        if line and not line[0].isspace():
+            in_supersedes = False
+            key, _, value = line.partition(":")
+            if key in {"memory_id", "status"}:
+                values[key] = value.strip().strip("\"'")
+        elif in_supersedes and line.lstrip().startswith("- "):
+            supersedes.append(line.lstrip()[2:].strip().strip("\"'"))
+    return values.get("memory_id"), values.get("status", "current"), supersedes
+
+
+def chunks(text: str, max_chars: int, overlap: int, min_chars: int):
+    heading = "(root)"
+    blocks = []
+    buf = []
+    for line in text.splitlines():
+        found = HEADING_RE.match(line)
+        if found:
+            if buf:
+                blocks.append((heading, "\n".join(buf).strip()))
+            heading, buf = found.group(2).strip(), [line]
+        else:
+            buf.append(line)
+    if buf:
+        blocks.append((heading, "\n".join(buf).strip()))
+    for heading, block in blocks:
+        if len(block) <= max_chars:
+            if len(block) >= min_chars:
+                yield heading, block
+            continue
+        start = 0
+        while start < len(block):
+            end = min(len(block), start + max_chars)
+            if end < len(block):
+                cut = block.rfind("\n", start, end)
+                if cut <= start + max_chars // 2:
+                    cut = block.rfind(". ", start, end)
+                    if cut > start:
+                        cut += 1
+                if cut > start:
+                    end = cut
+            piece = block[start:end].strip()
+            if len(piece) >= min_chars:
+                yield heading, piece
+            if end >= len(block):
+                break
+            start = max(start + 1, end - overlap)
+
+
+def manifest_sources(manifest: dict):
+    """Apply the canonical manifest patterns and ownership exclusions."""
+    found = {}
+    for key, exclusions, inside_rag in (
+        ("sources", manifest.get("exclude", []), False),
+        ("rag_sources", manifest.get("rag_exclude", ["rag/index/**", "rag/memories/tessa/**"]), True),
+    ):
+        for spec in manifest.get(key, []):
+            for path in ROOT.glob(spec["pattern"]):
+                rel = path.relative_to(ROOT).as_posix()
+                if not path.is_file() or rel.startswith("rag/") != inside_rag:
+                    continue
+                if any(fnmatch.fnmatch(rel, pattern) for pattern in exclusions):
+                    continue
+                found[rel] = (path, spec)
+    return found
+
+
 class OfflineIndex:
     def __init__(self):
         started = time.perf_counter()
-        cfg = memory.load_manifest().get("chunking", {})
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        cfg = manifest.get("chunking", {})
         self.db = sqlite3.connect(":memory:", check_same_thread=False)
         self.db.execute("CREATE VIRTUAL TABLE chunks USING fts5(source, heading, text)")
         self.info = {}
-        for source in memory.collect_versions(False):
-            if source.status in {"invalidated", "superseded"}:
+        sources = manifest_sources(manifest)
+        records = {}
+        ids = {}
+        for rel, (path, spec) in sources.items():
+            content = path.read_text(encoding="utf-8", errors="replace")
+            if rel.startswith("rag/memories/") and path.suffix == ".json":
+                try:
+                    obj = json.loads(content)
+                    content = str(obj.get("text") or obj.get("memory") or obj.get("content") or content)
+                except ValueError:
+                    pass
+            memory_id, status, replaces = frontmatter(content)
+            override = manifest.get("status_overrides", {}).get(rel)
+            if override:
+                status = str(override.get("status", status))
+            if rel.startswith("rag/memories/") and (
+                "# rettifica" in content[:900].casefold()
+                or "stato:** invalidato" in content[:900].casefold()
+                or "non deve essere usata come memoria canonica" in content[:900].casefold()
+            ):
+                status = "invalidated"
+            records[rel] = (content, spec, status, replaces)
+            if memory_id:
+                ids[memory_id] = rel
+        # New current records supersede older records without editing them.
+        for _rel, (_content, _spec, status, replaces) in records.items():
+            if status != "current":
                 continue
-            for heading, _ordinal, content in memory.chunk_text(
-                source.content,
+            pending = list(replaces)
+            seen = set()
+            while pending:
+                target = pending.pop()
+                target_path = ids.get(target, target)
+                if target_path in seen or target_path not in records:
+                    continue
+                seen.add(target_path)
+                pending.extend(records[target_path][3])
+                old_content, old_spec, _old_status, old_replaces = records[target_path]
+                records[target_path] = (old_content, old_spec, "superseded", old_replaces)
+        for rel, (content, spec, status, _replaces) in records.items():
+            if status in {"invalidated", "superseded"}:
+                continue
+            for heading, chunk in chunks(
+                content,
                 int(cfg.get("max_chars", 1400)),
                 int(cfg.get("overlap_chars", 220)),
                 int(cfg.get("min_chars", 120)),
             ):
                 cursor = self.db.execute(
                     "INSERT INTO chunks(source, heading, text) VALUES (?, ?, ?)",
-                    (source.path, heading, content),
+                    (rel, heading, chunk),
                 )
                 self.info[cursor.lastrowid] = {
-                    "status": source.status,
-                    "priority": source.priority,
-                    "kind": source.kind,
+                    "status": status,
+                    "priority": float(spec.get("priority", 1.0)),
+                    "kind": spec.get("kind", "source"),
                 }
         self.db.commit()
         self.build_ms = int((time.perf_counter() - started) * 1000)
 
     def search(self, queries: list[str], limit: int, profile: str) -> list[dict]:
         image_ref = re.search(r"\b(?:immagine|foto)\s+(\d+)\b", " ".join(queries), re.I)
-        phrases = [q.casefold().strip() for q in queries if len(memory.tokenize(q)) > 1]
+        phrases = [q.casefold().strip() for q in queries if len(tokenize(q)) > 1]
         # The complete conversational question is usually absent verbatim.
         # Keep the shorter meaningful phrase, such as "la nostra canzone".
         phrases = sorted(set(phrases), key=len)
         terms = []
         for query in queries:
-            for term in memory.tokenize(query):
+            for term in tokenize(query):
                 if term.casefold() not in STOPWORDS and term.casefold() not in terms:
                     terms.append(term.casefold())
         if not terms:
-            terms = list(dict.fromkeys(memory.tokenize(" ".join(queries))))[:5]
+            terms = list(dict.fromkeys(tokenize(" ".join(queries))))[:5]
         if not terms:
             return []
         expression = " OR ".join('"' + term.replace('"', '""') + '"' for term in terms[:12])
