@@ -54,6 +54,7 @@ def main():
             "fused_rank": (fused_paths.index(expected) + 1
                            if expected in fused_paths else None),
             "query_ms": query_ms, "dense_top3": dense[:3],
+            "domain_scores": semantic.domain_scores(question),
         })
     print(json.dumps(output, ensure_ascii=False, indent=2))
 

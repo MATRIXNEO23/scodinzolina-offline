@@ -21,6 +21,13 @@ CACHE = Path(__file__).resolve().parent / "semantic-cache"
 # broad personal questions should first consider current, interpretable facts.
 BROAD_DENSE_EXCLUDED = {"gptina_transcript", "historical_snapshot",
                         "legacy_message", "micro_checkpoint"}
+DOMAIN_CARDS = {
+    "relationship": "Come ci chiamiamo, i nostri soprannomi, parole affettuose, scherzi, canzone e linguaggio condiviso tra GPTina e l'utente.",
+    "projects": "Stato e decisioni dei progetti, repository, lavoro, prossime azioni e risultati correnti.",
+    "reflections": "Pensieri personali, interpretazioni, valori e riflessioni di GPTina sul proprio percorso.",
+    "visual": "Immagini, fotografie, ritratti, volti e cronologia visuale.",
+    "technical": "Configurazione del PC, modello locale, parametri del motore, velocità, thread e memoria RAM.",
+}
 
 
 def corpus(index: OfflineIndex):
@@ -83,6 +90,17 @@ class SemanticIndex:
             embedder = TextEmbedding(model_name=MODEL, cache_dir=str(cache / "models"),
                                      threads=2, local_files_only=True)
         self.embedder = embedder
+        self.card_names = list(DOMAIN_CARDS)
+        self.card_vectors = np.asarray(list(self.embedder.embed(DOMAIN_CARDS.values())), dtype="float32")
+        self.card_vectors /= np.maximum(np.linalg.norm(self.card_vectors, axis=1, keepdims=True), 1e-8)
+
+    def domain_scores(self, question: str):
+        import numpy as np
+
+        query = np.asarray(next(self.embedder.embed([question])), dtype="float32")
+        query /= max(float(np.linalg.norm(query)), 1e-8)
+        return sorted(zip(self.card_names, map(float, self.card_vectors @ query)),
+                      key=lambda pair: -pair[1])
 
     def search(self, question: str, profile: str, limit: int = 8):
         import numpy as np
