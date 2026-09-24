@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import re
@@ -25,16 +26,22 @@ import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Lock, local
+from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-API_VERSION = "1.6"
+API_VERSION = "1.7"
 SCRIPT_DIR = Path(__file__).resolve().parent
 WEB_DIR = SCRIPT_DIR / "web"
 CONFIG_PATH = SCRIPT_DIR / "chat_config.json"
 RUNTIME_CONFIG_PATH = SCRIPT_DIR / ".gptina_runtime_config.json"
 MEMORY_SERVER_SCRIPT = SCRIPT_DIR / "gptina_memory_server.py"
+PROMPT_DIAGNOSTICS_PATH = SCRIPT_DIR / "logs" / "prompt_diagnostics.jsonl"
+_token_capture = local()
+_diagnostics_lock = Lock()
+_previous_prompt_tokens = None
 
 DEFAULT_CONFIG = {
     "memory_base": "http://127.0.0.1:8765",
@@ -453,6 +460,7 @@ def count_chat_tokens(messages: list[dict], cfg: dict) -> int:
     tokens = tokenized.get("tokens")
     if not isinstance(tokens, list):
         raise RuntimeError("Il motore non ha restituito una lista token.")
+    _token_capture.tokens = tokens
     return len(tokens)
 
 
@@ -556,6 +564,7 @@ def fit_messages_to_context(
 
 
 def prepare_chat(user_text: str, history, cfg: dict) -> dict:
+    _token_capture.tokens = None
     started = time.perf_counter()
     route = memory_route(user_text)
     live = {} if route == "technical" else fetch_live_summary(cfg)
@@ -576,6 +585,9 @@ def prepare_chat(user_text: str, history, cfg: dict) -> dict:
     messages, fitted_memories, fit = fit_messages_to_context(
         user_text, history, live, memories, cfg, n_ctx
     )
+    tokens = _token_capture.tokens
+    if not fit["exact_token_count"] or not isinstance(tokens, list) or len(tokens) != fit["prompt_tokens"]:
+        tokens = None
 
     return {
         "messages": messages,
@@ -584,8 +596,42 @@ def prepare_chat(user_text: str, history, cfg: dict) -> dict:
         "memory_ms": memory_ms,
         "memory_route": route,
         "prepare_ms": int((time.perf_counter() - started) * 1000),
+        "_prompt_token_ids": tokens,
         **fit,
     }
+
+
+def prefix_diagnostics(prepared: dict) -> dict:
+    """Compare exact submitted tokens with the preceding bridge request, not server KV state."""
+    global _previous_prompt_tokens
+    current = prepared.get("_prompt_token_ids")
+    with _diagnostics_lock:
+        previous = _previous_prompt_tokens
+        _previous_prompt_tokens = current
+    common = None
+    if isinstance(current, list) and isinstance(previous, list):
+        common = 0
+        for left, right in zip(previous, current):
+            if left != right:
+                break
+            common += 1
+    return {
+        "prefix_common_tokens": common,
+        "previous_prompt_tokens": len(previous) if isinstance(previous, list) else None,
+        "prefix_divergence_index": common,
+        "system_sha256": hashlib.sha256(prepared["messages"][0]["content"].encode()).hexdigest(),
+        "history_messages": len(prepared["messages"]) - 2,
+    }
+
+
+def log_prompt_diagnostics(record: dict) -> None:
+    """Local metadata only: no prompt, answer, or reversible token IDs in the log."""
+    try:
+        PROMPT_DIAGNOSTICS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _diagnostics_lock, PROMPT_DIAGNOSTICS_PATH.open("a", encoding="utf-8") as out:
+            out.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass  # Diagnostics must never prevent a reply.
 
 
 def generation_payload(messages: list[dict], cfg: dict, *, stream: bool) -> dict:
@@ -732,7 +778,7 @@ def process_chat(user_text: str, history, cfg: dict) -> dict:
 
 
 class ChatHandler(BaseHTTPRequestHandler):
-    server_version = "GPTinaOfflineChat/1.6"
+    server_version = "GPTinaOfflineChat/1.7"
     cfg = load_config()
 
     def log_message(self, fmt, *args):
@@ -824,7 +870,9 @@ class ChatHandler(BaseHTTPRequestHandler):
             if len(message) > 5000:
                 raise ValueError("Messaggio troppo lungo per il bridge locale.")
 
+            request_started = time.perf_counter()
             prepared = prepare_chat(message, history, cfg)
+            prefix = prefix_diagnostics(prepared)
             self.send_ndjson_headers()
             stream_started = True
             self.send_ndjson({
@@ -837,6 +885,8 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "memory_ms": prepared["memory_ms"],
                 "prepare_ms": prepared["prepare_ms"],
                 "adjustments": prepared.get("adjustments", []),
+                "prefix_common_tokens": prefix["prefix_common_tokens"],
+                "prefix_divergence_index": prefix["prefix_divergence_index"],
             })
 
             started = time.perf_counter()
@@ -876,14 +926,33 @@ class ChatHandler(BaseHTTPRequestHandler):
                 })
                 return
 
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
             self.send_ndjson({
                 "type": "done",
                 "first_token_ms": first_token_ms,
-                "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                "elapsed_ms": elapsed_ms,
                 "timings": timings,
                 "usage": usage,
                 "finish_reason": finish_reason,
                 "reasoning_chars_hidden": reasoning_chars,
+            })
+            log_prompt_diagnostics({
+                "at": datetime.now(timezone.utc).isoformat(),
+                "route": prepared["memory_route"],
+                "sources": [item.get("path") for item in prepared["memories"] if item.get("path")],
+                "prompt_tokens": prepared["prompt_tokens"],
+                "exact_token_count": prepared["exact_token_count"],
+                "context_size": prepared["context_size"],
+                "adjustments": prepared["adjustments"],
+                **prefix,
+                "memory_ms": prepared["memory_ms"],
+                "prepare_ms": prepared["prepare_ms"],
+                "first_token_ms": first_token_ms,
+                "engine_elapsed_ms": elapsed_ms,
+                "bridge_elapsed_ms": int((time.perf_counter() - request_started) * 1000),
+                "timings": timings,
+                "usage": usage,
+                "finish_reason": finish_reason,
             })
 
         except ValueError as exc:

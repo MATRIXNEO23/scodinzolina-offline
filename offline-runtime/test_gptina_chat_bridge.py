@@ -155,6 +155,20 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(payload["reasoning_effort"], "none")
         self.assertFalse(payload["chat_template_kwargs"]["enable_thinking"])
 
+    def test_prefix_diagnostics_counts_exact_common_tokens_without_logging_text(self):
+        mod._previous_prompt_tokens = None
+        first = {"messages": [{"content": "system A"}, {"content": "question"}],
+                 "_prompt_token_ids": [1, 2, 3, 4]}
+        second = {"messages": [{"content": "system B"}, {"content": "next"}],
+                  "_prompt_token_ids": [1, 2, 5, 6]}
+        self.assertIsNone(mod.prefix_diagnostics(first)["prefix_common_tokens"])
+        result = mod.prefix_diagnostics(second)
+        self.assertEqual(result["prefix_common_tokens"], 2)
+        self.assertEqual(result["previous_prompt_tokens"], 4)
+        self.assertEqual(result["prefix_divergence_index"], 2)
+        self.assertNotIn("system B", str(result))
+        mod._previous_prompt_tokens = None
+
     def test_fit_context_drops_old_history_before_current_turn(self):
         cfg = dict(mod.DEFAULT_CONFIG)
         cfg["max_tokens"] = 80

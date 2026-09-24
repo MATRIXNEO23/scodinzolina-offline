@@ -105,3 +105,45 @@ I consigli esterni su KV q8, mlock, no-mmap, affinità e guadagni numerici
 restano ipotesi. La documentazione llama.cpp distingue `-t` (generazione) e
 `-tb` (prompt/batch) e descrive la cache del prefisso comune nello stesso
 slot; non dimostra un vantaggio sul PC di Alberto senza questa misura.
+
+### Risultato del benchmark sul PC: prefill-threads
+
+Alberto ha eseguito il profilo sul medesimo GGUF Q4_K_M (SHA-256
+`6615b7b5184931e4df9c6d0ae9cd29ca9319b73908d4423283d4cc401a12a1cd`,
+2.497.278.912 byte), con un solo slot, prompt identico di 282 token e
+risposta di 64 token con lo stesso hash in tutte le sei righe:
+
+| `-tb` | cold primo token | cold prompt tok/s | cold decode tok/s | CPU core equivalenti | RSS picco MiB | warm cache_n/prompt_n |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2 | 86297 ms | 3,269 | 2,393 | 1,93 | 2611,8 | 281/1 |
+| 3 | 72359 ms | 3,898 | 2,155 | 2,57 | 2612,0 | 281/1 |
+| 4 | 66375 ms | 4,249 | 2,224 | 3,21 | 2611,8 | 281/1 |
+
+`-tb 4` ha ridotto il primo token cold di 19,9 s rispetto a `-tb 2`, ma ha
+usato molta più CPU. I tempi warm della richiesta **identica** sono stati
+453, 516 e 437 ms. Questa prova conferma il riuso di 281 token nel benchmark
+diretto; non misura la cache fra domande diverse nella chat. Il prefill a
+freddo e il decode hanno una sola replica per configurazione: non cambiare
+ancora il launcher sulla base di una promessa di guadagno non ripetuto.
+
+### Diagnostica del prefisso nella chat
+
+App 1.6 / bridge API 1.7 registrano per ogni turno streaming completato in
+`offline-runtime/logs/prompt_diagnostics.jsonl`: route, fonti, conteggio
+token esatto o fallback, lunghezza del prefisso tokenizzato comune con la
+precedente richiesta del **bridge**, indice di divergenza, hash del system,
+numero di messaggi history, `timings` originali (inclusi `cache_n` e
+`prompt_n` se forniti dal motore), tempo memoria/preparazione/primo token e
+durata del turno nel bridge. La UI mostra cache, token ricalcolati e prefisso
+comune. Il log non contiene testo della conversazione né token IDs. Usa la
+lista già ottenuta durante il context fitting: nessuna nuova richiesta HTTP
+al motore per la diagnostica. Se la tokenizzazione non è disponibile, il
+prefisso è `null`, non una stima presentata come esatta.
+
+Il confronto riguarda il prompt precedente inviato dal bridge, non prova da
+solo cosa sia rimasto nella KV cache del server. Una nuova sessione browser
+può condividere lo stesso processo bridge; annotare route e fonti per
+interpretare il confronto. Dopo l'aggiornamento chiudere le vecchie finestre
+GPTina, riavviare app 1.6 e fare tre domande tecniche consecutive nella stessa
+conversazione; inviare il JSONL locale per analisi. Il vecchio bridge API 1.6
+viene rifiutato dal launcher aggiornato.
