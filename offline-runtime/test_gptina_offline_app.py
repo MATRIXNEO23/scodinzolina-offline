@@ -86,6 +86,17 @@ class LauncherProfileTests(unittest.TestCase):
         self.assertEqual(active["threads"], 2)
         self.assertEqual(active["model"], "model.gguf")
 
+    def test_semantic_trial_flag_is_written_to_runtime_config(self):
+        original = app.RUNTIME_CONFIG
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                app.RUNTIME_CONFIG = pathlib.Path(directory) / "runtime.json"
+                app.write_runtime_cfg(1024, 160, semantic_retrieval=True)
+                payload = json.loads(app.RUNTIME_CONFIG.read_text())
+        finally:
+            app.RUNTIME_CONFIG = original
+        self.assertIs(payload["semantic_retrieval"], True)
+
 
 if __name__ == "__main__":
     unittest.main()
