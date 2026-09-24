@@ -43,6 +43,10 @@ in sola lettura; vettori e modello sono cache locali ignorate da Git.
 Nel launcher premi **Prepara indice**, attendi «Indice pronto», spunta
 **Memoria semantica (prova)** e premi **AVVIA GPTINA**. Per tornare alla ricerca
 normale, togli la spunta, premi **Ferma** e riavvia GPTina.
+Al primo avvio con la spunta, il launcher carica e verifica l'indice prima di
+aprire la chat; sul PC lento questa attesa può richiedere tempo. Se fallisce,
+mostra l'errore senza presentare la memoria semantica come pronta. I turni
+successivi usano l'indice già caricato nel server.
 
 In alternativa, per prepararla da PowerShell dalla radice della repo:
 

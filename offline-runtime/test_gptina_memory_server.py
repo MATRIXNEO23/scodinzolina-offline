@@ -1,7 +1,11 @@
 import importlib.util
 import pathlib
 import tempfile
+import json
+import threading
 import unittest
+from http.server import ThreadingHTTPServer
+from urllib.request import urlopen
 
 HERE = pathlib.Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location("gptina_memory_server", HERE / "gptina_memory_server.py")
@@ -10,6 +14,24 @@ SPEC.loader.exec_module(mod)
 
 
 class MemoryServerTests(unittest.TestCase):
+    def test_warmup_loads_semantic_backend_before_chat(self):
+        original = mod.semantic_candidates
+        server = ThreadingHTTPServer(("127.0.0.1", 0), mod.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        try:
+            mod.semantic_candidates = lambda question, profile, limit: [
+                {"path": "SHARED_LANGUAGE.md"}]
+            thread.start()
+            with urlopen(f"http://127.0.0.1:{server.server_port}/semantic/warmup") as response:
+                payload = json.load(response)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+            mod.semantic_candidates = original
+        self.assertEqual(payload["backend"], "semantic")
+        self.assertEqual(payload["count"], 1)
+
     def test_semantic_can_rescue_a_paraphrase_without_displacing_exact_evidence(self):
         unrelated = [{"path": "unrelated.md", "matched_queries": []}]
         semantic = [{"path": "SHARED_LANGUAGE.md", "snippet": "Scodinzolina"}]

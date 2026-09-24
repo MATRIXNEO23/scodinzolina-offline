@@ -32,7 +32,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-API_VERSION = "1.12"
+API_VERSION = "1.13"
 SCRIPT_DIR = Path(__file__).resolve().parent
 WEB_DIR = SCRIPT_DIR / "web"
 CONFIG_PATH = SCRIPT_DIR / "chat_config.json"
@@ -369,7 +369,8 @@ def retrieve_memory(user_text: str, cfg: dict, route: str = "all") -> tuple[list
     started = time.perf_counter()
 
     try:
-        data = http_json(cfg["memory_base"].rstrip("/") + "/search_multi?" + params, timeout=20.0)
+        data = http_json(cfg["memory_base"].rstrip("/") + "/search_multi?" + params,
+                         timeout=90.0 if cfg.get("semantic_retrieval") else 20.0)
         elapsed = int((time.perf_counter() - started) * 1000)
         results = data.get("results", [])[:limit]
         if route == "relationship" and SHARED_NAME_CUES.search(user_text):
@@ -381,7 +382,16 @@ def retrieve_memory(user_text: str, cfg: dict, route: str = "all") -> tuple[list
             except (OSError, ValueError, KeyError):
                 pass
         return results, int(data.get("scan_ms", elapsed))
-    except Exception:
+    except Exception as exc:
+        if cfg.get("semantic_retrieval") and route != "technical":
+            print(f"[GPTina Chat] Ricerca semantica fallita: {exc}. Riprovo con FTS5.")
+            try:
+                lexical_pairs = [(key, value) for key, value in pairs if key != "semantic"]
+                data = http_json(cfg["memory_base"].rstrip("/") + "/search_multi?" +
+                                 urlencode(lexical_pairs), timeout=15.0)
+                return data.get("results", [])[:limit], int((time.perf_counter() - started) * 1000)
+            except Exception as retry_exc:
+                print(f"[GPTina Chat] Anche FTS5 non disponibile: {retry_exc}")
         if route != "all":
             # An older server cannot enforce a restricted scan. Never leak broad
             # autobiographical matches into a technical or visual prompt.

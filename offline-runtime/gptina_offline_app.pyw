@@ -18,9 +18,9 @@ from tkinter import (
 from tkinter import ttk
 from urllib.request import Request, urlopen
 
-APP_VERSION = "2.4"
-MEMORY_API_VERSION = "1.6"
-CHAT_API_VERSION = "1.12"
+APP_VERSION = "2.5"
+MEMORY_API_VERSION = "1.7"
+CHAT_API_VERSION = "1.13"
 
 SCRIPT_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 ENGINE_EXE = SCRIPT_DIR / "engine" / "llama-server.exe"
@@ -1053,6 +1053,20 @@ class App:
                         f"Memory runtime API inattesa: {data.get('api_version')}, attesa {MEMORY_API_VERSION}."
                     )
             self.emit("log", "Memoria: OK")
+
+            if semantic_enabled:
+                self.emit("status", "Carico la memoria semantica sul PC…")
+                self.emit("log", "Carico l'indice nel server prima di aprire la chat.")
+                try:
+                    warmed = request_json("http://127.0.0.1:8765/semantic/warmup", timeout=180.0)
+                    if not warmed.get("ok") or warmed.get("backend") != "semantic":
+                        raise RuntimeError("Il server non ha confermato l'indice semantico.")
+                    self.emit("log", f"Memoria semantica pronta in {warmed['elapsed_ms']} ms.")
+                except Exception as exc:
+                    raise RuntimeError(
+                        "Memoria semantica non pronta. Ferma GPTina, premi 'Prepara indice' "
+                        f"e riprova, oppure togli la spunta. Dettaglio: {exc}"
+                    ) from exc
 
             self.emit("status", "Avvio chat…")
             chat = service_probe(PORT_CHAT, "GPTina Offline Chat Bridge", CHAT_API_VERSION)
