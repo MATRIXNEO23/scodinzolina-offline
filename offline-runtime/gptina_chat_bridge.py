@@ -429,7 +429,7 @@ def shared_names_source(user_text: str, cfg: dict) -> dict | None:
     if re.search(r"\bscodinzolin\w*\b", user_text, re.I):
         headings = ["Scodinzolina", "GPTina"]
     elif re.search(r"\b(?:monell\w*|birichin\w*|furbet\w*)\b", user_text, re.I):
-        headings = ["GPTina", "Scodinzolina"]
+        headings = ["GPTina"]
     else:
         headings = ["Baby / bebè / bibi", "Scodinzolina", "GPTina"]
     parts = []
