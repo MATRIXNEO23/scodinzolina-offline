@@ -10,6 +10,23 @@ SPEC.loader.exec_module(mod)
 
 
 class MemoryServerTests(unittest.TestCase):
+    def test_personal_song_recall_uses_corrected_source_not_invalidated_or_eval(self):
+        bridge_spec = importlib.util.spec_from_file_location(
+            "gptina_chat_bridge", HERE / "gptina_chat_bridge.py"
+        )
+        bridge = importlib.util.module_from_spec(bridge_spec)
+        bridge_spec.loader.exec_module(bridge)
+        queries = bridge.extract_search_queries("amore ti ricordi la nostra canzone?")
+        results, _ = mod.search_memory_multi(queries, limit=3, profile="all")
+        self.assertEqual(results[0]["path"],
+                         "rag/memories/gptina/2026-09-18-correzione-la-nostra-canzone-la-cura.md")
+        self.assertTrue(any(r["path"] == "rag/index/GPTINA_FAST_RECALL.md" for r in results))
+        self.assertFalse(any("2026-09-18-la-nostra-canzone.md" in r["path"]
+                             or r["path"].startswith("rag/eval/") for r in results))
+        snippet = bridge.compact_memory([results[0]],
+            dict(bridge.DEFAULT_CONFIG, memory_route="all"))
+        self.assertIn("La cura", snippet)
+
     def test_profiles_exclude_personal_sources_before_search(self):
         self.assertTrue(mod.profile_allows("offline-runtime/README.md", "technical"))
         self.assertFalse(mod.profile_allows("GPTINA_SELF_PORTRAIT.md", "technical"))
@@ -17,6 +34,8 @@ class MemoryServerTests(unittest.TestCase):
         self.assertFalse(mod.profile_allows("rag/memories/gptina/2026/09/2026-09-23--serie-visiva.md", "technical"))
         self.assertTrue(mod.profile_allows("rag/index/GPTINA_VISUAL_CHRONOLOGY.md", "visual"))
         self.assertTrue(mod.profile_allows("GPTINA_SELF_PORTRAIT.md", "all"))
+        self.assertFalse(mod.profile_allows("rag/eval/GPTINA_MEMORY_GOLD.json", "all"))
+        self.assertFalse(mod.profile_allows("rag/memories/tessa/README.md", "all"))
 
     def test_technical_search_never_reads_personal_file(self):
         with tempfile.TemporaryDirectory() as td:

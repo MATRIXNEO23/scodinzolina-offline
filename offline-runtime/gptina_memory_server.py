@@ -17,10 +17,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-API_VERSION = "1.2"
+API_VERSION = "1.3"
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 CONFIG_PATH = REPO_ROOT / "rag" / "OFFLINE_RECOVERY_CONFIG.json"
+MANIFEST_PATH = REPO_ROOT / "rag" / "memory_manifest.json"
 
 ALLOWED_SUFFIXES = {
     ".md", ".txt", ".json", ".jsonl", ".yaml", ".yml", ".py", ".toml", ".ini", ".cfg"
@@ -51,7 +52,10 @@ TECHNICAL_PATHS = (
 def profile_allows(path: str, profile: str) -> bool:
     """Restrict files before reading them; the full corpus remains available for recall."""
     if profile == "all":
-        return True
+        return not (
+            path.startswith(("rag/eval/", "rag/memories/tessa/", "rag/memories/ettore/"))
+            or path in {"rag/README.md", "rag/memory_manifest.json"}
+        )
     if profile == "technical":
         return path in TECHNICAL_PATHS
     if profile == "visual":
@@ -205,6 +209,12 @@ def search_memory_multi(queries, limit: int = DEFAULT_SEARCH_LIMIT, profile: str
     folded = [q.casefold() for q in clean]
     started = time.perf_counter()
     results = []
+    overrides = {}
+    if profile == "all":
+        try:
+            overrides = json.loads(MANIFEST_PATH.read_text(encoding="utf-8")).get("status_overrides", {})
+        except (OSError, ValueError):
+            pass
 
     paths = (iter(REPO_ROOT / name for name in TECHNICAL_PATHS if (REPO_ROOT / name).is_file())
              if profile == "technical" else iter_search_files())
@@ -215,6 +225,15 @@ def search_memory_multi(queries, limit: int = DEFAULT_SEARCH_LIMIT, profile: str
             text = read_text_file(path)
         except Exception:
             continue
+
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        if profile == "all" and relative.startswith("rag/memories/"):
+            status = overrides.get(relative, {}).get("status", "current")
+            header = text[:900].casefold()
+            if status in {"superseded", "invalidated"} or (
+                "# rettifica" in header or "stato:** invalidato" in header
+            ):
+                continue
 
         haystack = text.casefold()
         hits = []
@@ -231,9 +250,25 @@ def search_memory_multi(queries, limit: int = DEFAULT_SEARCH_LIMIT, profile: str
         hits.sort(key=lambda item: (-item[0], item[1]))
         best_score, anchor, _ = hits[0]
         score = sum(item[0] for item in hits)
-        relative = path.relative_to(REPO_ROOT).as_posix()
         if profile == "technical" and relative == "offline-runtime/TECHNICAL_RUNTIME_CONTEXT.md":
             score += 1000  # Verified target facts before audit/method notes.
+        if profile == "all":
+            # A phrase in the title or source name is more specific than a
+            # generic mention in a long transcript or checkpoint.
+            title = text[: min(len(text), 180)].casefold()
+            name = relative.rsplit("/", 1)[-1].replace("-", " ").replace("_", " ").casefold()
+            for phrase in folded:
+                if len(phrase.split()) >= 2 and phrase in haystack:
+                    if phrase in title:
+                        score += 450
+                    if phrase in name:
+                        score += 180
+            if relative.startswith("rag/memories/gptina/"):
+                score += 110
+            elif relative == "rag/index/GPTINA_FAST_RECALL.md":
+                score += 150
+            elif relative.startswith("rag/transcripts/"):
+                score -= 100
         matched = [item[2] for item in hits]
         max_len = max(len(item[2]) for item in hits)
 
@@ -290,7 +325,7 @@ def recover_current() -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "GPTinaOfflineMemory/1.1"
+    server_version = "GPTinaOfflineMemory/1.3"
 
     def _send_json(self, payload, status=HTTPStatus.OK):
         body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")

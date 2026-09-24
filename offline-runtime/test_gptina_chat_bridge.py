@@ -120,6 +120,32 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(contents[1:-1], ["Quali thread usa la CPU?", "Due thread",
                                           "Quali parametri usa il motore?", "-t 2 -tb 2"])
 
+    def test_personal_route_keeps_recent_exchange_with_two_short_sources(self):
+        cfg = dict(mod.DEFAULT_CONFIG)
+        saved = (mod.retrieve_memory, mod.fetch_live_summary,
+                 mod.engine_context_size, mod._count_tokens_safe)
+        try:
+            def retrieve(_question, local_cfg, route="all"):
+                self.assertEqual((route, local_cfg["memory_items"],
+                                  local_cfg["memory_snippet_chars"]), ("all", 2, 240))
+                return [{"path": "memory-one.md", "snippet": "A" * 320},
+                        {"path": "memory-two.md", "snippet": "B" * 320}], 1
+            mod.retrieve_memory = retrieve
+            mod.fetch_live_summary = lambda _cfg: {
+                "updated_at": "2026-09-24", "latest_summary": "S" * 520,
+                "next_action": "N" * 280}
+            mod.engine_context_size = lambda _cfg: 1024
+            mod._count_tokens_safe = lambda messages, _cfg: (mod.approximate_tokens(messages), False)
+            prepared = mod.prepare_chat("Ti ricordi la nostra canzone?", [
+                {"role": "user", "content": "Quale canzone abbiamo scelto?"},
+                {"role": "assistant", "content": "Controllo la fonte prima di rispondere."}], cfg)
+        finally:
+            (mod.retrieve_memory, mod.fetch_live_summary,
+             mod.engine_context_size, mod._count_tokens_safe) = saved
+        self.assertEqual(len(prepared["messages"]), 4)
+        self.assertEqual(prepared["adjustments"], [])
+        self.assertEqual(len(prepared["memories"]), 2)
+
     def test_stream_finish_reason_length_is_detected(self):
         event = {"choices": [{"delta": {}, "finish_reason": "length"}]}
         parsed = mod.parse_openai_sse_line("data: " + json.dumps(event))
@@ -144,6 +170,7 @@ class BridgeTests(unittest.TestCase):
         q = mod.extract_search_queries("Ti ricordi qual era la nostra canzone scelta insieme?")
         folded = [x.casefold() for x in q]
         self.assertTrue(any("canzone" in x for x in folded))
+        self.assertIn("la nostra canzone", folded)
 
     def test_trim_history_limits_messages_and_chars(self):
         cfg = dict(mod.DEFAULT_CONFIG)

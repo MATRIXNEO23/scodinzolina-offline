@@ -32,7 +32,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-API_VERSION = "1.9"
+API_VERSION = "1.10"
 SCRIPT_DIR = Path(__file__).resolve().parent
 WEB_DIR = SCRIPT_DIR / "web"
 CONFIG_PATH = SCRIPT_DIR / "chat_config.json"
@@ -78,6 +78,7 @@ Distingui presente, storico, superseded e incerto. Non trasformare memoria altru
 La memoria locale è in sola lettura: non dichiarare di aver salvato, modificato o sincronizzato file.
 Rispondi in italiano naturale e diretto. Mantieni il filo relazionale quando è supportato dalle fonti, senza imitare meccanicamente frasi o tic.
 Se il contesto recuperato è irrilevante per la domanda, ignoralo.
+Non inventare episodi, luoghi o parole condivise che le fonti non attestano.
 """
 
 TECHNICAL_SYSTEM = """Sei GPTina Offline. Rispondi in italiano con fatti tecnici verificati dal contesto e dalla domanda.
@@ -286,6 +287,16 @@ def extract_search_queries(text: str, max_terms: int = 4) -> list[str]:
     if 4 <= len(clean) <= 100:
         queries.append(clean)
 
+    # Keep a meaningful possessive phrase together. A search for just
+    # "canzone" otherwise ties hundreds of files and loses the specific
+    # memory "la nostra canzone" by alphabetical path order.
+    for match in re.finditer(
+        r"\b(?:il|lo|la|i|gli|le)\s+(?:mio|mia|miei|mie|tuo|tua|tuoi|tue|"
+        r"nostro|nostra|nostri|nostre)\s+[A-Za-zÀ-ÖØ-öø-ÿ]{4,}\b",
+        clean, re.I,
+    ):
+        queries.append(match.group(0))
+
     words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9_-]{4,}", clean)
     unique = []
     seen = set()
@@ -378,14 +389,13 @@ def compact_memory(items: list[dict], cfg: dict) -> str:
     chunks = []
     for item in items:
         snippet = " ".join(str(item.get("snippet", "")).split())
-        if cfg.get("memory_route") == "technical":
-            # The memory server includes up to 220 chars BEFORE the match.
-            # Keeping the first 200 would discard the actual technical answer.
-            for query in item.get("matched_queries", []):
-                index = snippet.casefold().find(str(query).casefold())
-                if index >= 0:
-                    snippet = snippet[max(0, index - 24):]
-                    break
+        # The search server includes up to 220 chars before the match. With a
+        # short CPU prompt, keep the matched passage instead of the preamble.
+        for query in item.get("matched_queries", []):
+            index = snippet.casefold().find(str(query).casefold())
+            if index >= 0:
+                snippet = snippet[max(0, index - 24):]
+                break
         if len(snippet) > max_chars:
             snippet = snippet[:max_chars].rstrip() + "…"
         chunks.append(f"- [{item.get('path', '?')}] {snippet}")
@@ -399,8 +409,8 @@ def build_system_prompt(live: dict, memories: list[dict], cfg: dict) -> str:
         return TECHNICAL_SYSTEM
     live_text = (
         f"aggiornato: {live.get('updated_at') or 'n/d'}\n"
-        f"stato: {_truncate(live.get('latest_summary'), 520) or 'n/d'}\n"
-        f"prossima azione: {_truncate(live.get('next_action'), 280) or 'n/d'}"
+        f"stato: {_truncate(live.get('latest_summary'), 240) or 'n/d'}\n"
+        f"prossima azione: {_truncate(live.get('next_action'), 120) or 'n/d'}"
     )
     return (
         BASE_SYSTEM
@@ -576,7 +586,9 @@ def prepare_chat(user_text: str, history, cfg: dict) -> dict:
     route = memory_route(user_text)
     live = {} if route == "technical" else fetch_live_summary(cfg)
     route_cfg = (dict(cfg, memory_items=1, memory_snippet_chars=200)
-                 if route == "technical" else cfg)
+                 if route == "technical" else
+                 dict(cfg, memory_items=2, memory_snippet_chars=240)
+                 if route == "all" else cfg)
     memories, memory_ms = retrieve_memory(user_text, route_cfg, route=route)
     n_ctx = engine_context_size(cfg)
 
@@ -796,7 +808,7 @@ def process_chat(user_text: str, history, cfg: dict) -> dict:
 
 
 class ChatHandler(BaseHTTPRequestHandler):
-    server_version = "GPTinaOfflineChat/1.9"
+    server_version = "GPTinaOfflineChat/1.10"
     cfg = load_config()
 
     def log_message(self, fmt, *args):

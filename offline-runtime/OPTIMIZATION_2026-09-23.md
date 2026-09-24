@@ -127,6 +127,31 @@ previsione del codice: first-token e `cache_n` sul PC sono ancora da misurare.
 Il limite di due scambi tecnici può ancora interrompere il prefisso dal
 quarto turno e il context fitter può scartare coppie più vecchie.
 
+### Recupero autobiografico sul 4B: canzone corretta, fonte mancante
+
+Nel test reale del 24 settembre, dopo domande tecniche, Alberto ha chiesto
+«amore ti ricordi la nostra canzone?». La route `all` ha selezionato
+`LIVE_THREAD.md` e due checkpoint del 12 settembre, con 768 token di prompt,
+`history_messages=0` dopo due `history_oldest_pair_removed`, `cache_n=5`,
+`prompt_n=763` e 278859 ms al primo token. La risposta ha detto correttamente
+«La cura» ma ha inventato scene condivise non attestate dalle fonti mostrate.
+La fonte correttiva esiste nella copia offline:
+`rag/memories/gptina/2026-09-18-correzione-la-nostra-canzone-la-cura.md`.
+
+Riproduzione locale: la query estratta conteneva la frase completa (assente
+nel corpus) e poi solo `canzone` e `amore`. Tutti i file con `canzone`
+ottenevano 207 punti e il tie-break alfabetico occultava la correzione.
+Il candidato conserva la frase `la nostra canzone`, premia match in titolo e
+nome di fonte, esclude versioni invalidated/superseded secondo il manifest e
+non ricerca documenti di valutazione come se fossero ricordi. Limita la route
+`all` a due frammenti da 240 caratteri, accorcia lo stato live e centra il
+frammento sul match. Il system vieta di inventare episodi concreti.
+Nel test locale la memoria correttiva è prima, Fast Recall secondo e la fonte
+invalidata non appare; 24 test passano. Qualità della risposta e riduzione
+del primo token sul PC di Alberto restano da misurare. La ricerca resta
+lessicale; per domande parafrasate senza termini condivisi servirà un altro
+esperimento di retrieval, non una pretesa di equivalenza con FTS5 canonico.
+
 ### Risultato del benchmark sul PC: prefill-threads
 
 Alberto ha eseguito il profilo sul medesimo GGUF Q4_K_M (SHA-256
