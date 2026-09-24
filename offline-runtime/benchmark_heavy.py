@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Repeatable Windows CPU benchmark of the selected heavy GGUF with llama-server.
 
-Runs eight configurations, two identical turns each (cold/warm prompt cache).
+The full matrix runs eight configurations. The prefill-threads mode isolates
+batch threads on three configurations. Each runs identical cold/warm turns.
 No model is downloaded or substituted. Keep the PC idle during the run.
 """
 
@@ -18,6 +19,20 @@ from threading import Event, Thread
 from urllib.request import Request, urlopen
 
 PROMPT = "Spiega in italiano, in modo concreto, come confrontare 2 e 4 thread su un Intel i3-2100 per un modello GGUF 4B."
+PREFILL_PROMPT = (
+    "Valuta un esperimento locale sullo stesso modello GGUF Qwen3 4B, senza cambiare "
+    "modello o quantizzazione. Il computer usa Intel Core i3-2100 Sandy Bridge, "
+    "due core fisici e quattro thread logici, AVX ma non AVX2, 10 GB di RAM. "
+    "Il motore llama.cpp usa solo CPU, un solo slot, contesto 1024, batch 256, "
+    "micro-batch 128 e due thread per la generazione. Nel primo turno misura il "
+    "tempo al primo token, i token del prompt elaborati al secondo, i token di "
+    "risposta al secondo, il picco di memoria del processo e l'uso della CPU. "
+    "Ripeti la richiesta identica sullo stesso slot per verificare se il prefisso "
+    "viene riutilizzato. Riavvia poi il motore, cambia soltanto i thread batch "
+    "da due a tre e infine a quattro, e ripeti le due misure. Considera il carico "
+    "di fondo e non attribuire differenze piccole al parametro senza ripetere "
+    "la prova. Spiega quali risultati renderebbero preferibile ogni valore."
+)
 SYSTEM = "Rispondi in italiano con chiarezza e brevità."
 
 
@@ -81,9 +96,9 @@ def wait_ready(proc, port):
     raise TimeoutError("llama-server did not become ready within 240 seconds")
 
 
-def one_turn(proc, port):
+def one_turn(proc, port, prompt=PROMPT):
     payload = {"model": "local", "messages": [
-        {"role": "system", "content": SYSTEM}, {"role": "user", "content": PROMPT}],
+        {"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
         "temperature": 0, "seed": 42, "max_tokens": 64, "stream": True,
         "cache_prompt": True, "chat_template_kwargs": {"enable_thinking": False},
         "reasoning_effort": "none"}
@@ -138,48 +153,58 @@ def main():
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--port", type=int, default=5017)
+    parser.add_argument("--mode", choices=("full", "prefill-threads"), default="full",
+                        help="prefill-threads: keep -t 2 and vary only -tb 2/3/4 at context 1024")
     args = parser.parse_args()
     if not args.engine.is_file() or not args.model.is_file():
         parser.error("Engine and model must be existing local files")
     with args.model.open("rb") as model_file:
         digest = hashlib.file_digest(model_file, "sha256").hexdigest()
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    for threads in (2, 4):
-        for context in (1024, 2048):
-            for batch, ubatch in ((128, 64), (256, 128)):
-                command = [str(args.engine), "-m", str(args.model), "--host", "127.0.0.1",
-                           "--port", str(args.port), "-t", str(threads), "-tb", str(threads),
-                           "-c", str(context), "-b", str(batch), "-ub", str(ubatch),
-                           "-np", "1",
-                           "-ngl", "0", "--flash-attn", "off", "--jinja"]
-                with args.output.open("a", encoding="utf-8") as out, args.output.with_suffix(".engine.log").open("a", encoding="utf-8") as log:
-                    proc = subprocess.Popen(command, stdout=log, stderr=log)
-                    try:
-                        wait_ready(proc, args.port)
-                        with urlopen(f"http://127.0.0.1:{args.port}/props", timeout=4) as response:
-                            slots = json.load(response).get("total_slots")
-                        if slots is not None and int(slots) != 1:
-                            raise RuntimeError(f"llama-server exposed {slots} slots, expected 1")
-                        for phase in ("cold", "warm"):
-                            result = one_turn(proc, args.port)
-                            record = {"at": datetime.now(timezone.utc).isoformat(),
-                                      "model": str(args.model), "model_sha256": digest,
-                                      "model_bytes": args.model.stat().st_size,
-                                      "engine": str(args.engine), "threads": threads,
-                                      "context": context, "batch": batch, "ubatch": ubatch,
-                                      "slots_requested": 1, "slots_reported": slots,
-                                      "phase": phase, **result}
-                            out.write(json.dumps(record, ensure_ascii=False) + "\n")
-                            out.flush()
-                            print(f"{threads=} {context=} {batch=} {phase}: "
-                                  f"{result['decode_tok_s']} decode tok/s, {result['first_token_ms']} ms first token")
-                    finally:
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=15)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-                            proc.wait()
+    if args.mode == "prefill-threads":
+        configs = [(2, tb, 1024, 256, 128) for tb in (2, 3, 4)]
+        prompt = PREFILL_PROMPT
+    else:
+        configs = [(t, t, c, b, ub) for t in (2, 4)
+                   for c in (1024, 2048) for b, ub in ((128, 64), (256, 128))]
+        prompt = PROMPT
+    for threads, threads_batch, context, batch, ubatch in configs:
+        command = [str(args.engine), "-m", str(args.model), "--host", "127.0.0.1",
+                   "--port", str(args.port), "-t", str(threads), "-tb", str(threads_batch),
+                   "-c", str(context), "-b", str(batch), "-ub", str(ubatch),
+                   "-np", "1",
+                   "-ngl", "0", "--flash-attn", "off", "--jinja"]
+        with args.output.open("a", encoding="utf-8") as out, args.output.with_suffix(".engine.log").open("a", encoding="utf-8") as log:
+            proc = subprocess.Popen(command, stdout=log, stderr=log)
+            try:
+                wait_ready(proc, args.port)
+                with urlopen(f"http://127.0.0.1:{args.port}/props", timeout=4) as response:
+                    slots = json.load(response).get("total_slots")
+                if slots is not None and int(slots) != 1:
+                    raise RuntimeError(f"llama-server exposed {slots} slots, expected 1")
+                for phase in ("cold", "warm"):
+                    result = one_turn(proc, args.port, prompt)
+                    record = {"at": datetime.now(timezone.utc).isoformat(),
+                              "model": str(args.model), "model_sha256": digest,
+                              "model_bytes": args.model.stat().st_size,
+                              "engine": str(args.engine), "threads": threads,
+                              "threads_batch": threads_batch, "mode": args.mode,
+                              "context": context, "batch": batch, "ubatch": ubatch,
+                              "slots_requested": 1, "slots_reported": slots,
+                              "phase": phase, **result}
+                    out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    out.flush()
+                    print(f"{threads=} {threads_batch=} {context=} {batch=} {phase}: "
+                          f"{result['prompt_tok_s']} prompt tok/s, "
+                          f"{result['decode_tok_s']} decode tok/s, "
+                          f"{result['first_token_ms']} ms first token")
+            finally:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
 
 
 if __name__ == "__main__":

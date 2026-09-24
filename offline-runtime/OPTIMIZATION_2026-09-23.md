@@ -70,3 +70,38 @@ memoria non è stato ancora misurato sul PC di Alberto. Le segnalazioni esterne
 di `n_slots = 4` non sono state verificate dal log completo del suo processo.
 Non sono stati modificati `-t 2`, `-b 256`, `-ub 128`, `-c 1024`, mmap, mlock,
 cache KV o sampler sulla base di stime non misurate.
+
+### Quarto test reale e prossima prova isolata
+
+Nella schermata dell'app 1.5 la domanda tecnica ha usato solo
+`TECHNICAL_RUNTIME_CONTEXT.md`: prompt 211/1024, memoria 6 ms,
+preparazione 25 ms, primo token 61965 ms, prompt 3,4 tok/s e decode
+2,17 tok/s. La risposta ora riporta i flag del motore, ma chiama `-np 1`
+«numero di processi»: il flag indica gli slot di richieste parallele. La
+risposta ha raggiunto Max risposta 160. Questa osservazione non isola il
+vantaggio dello slot singolo o dei thread, perché il carico del PC non era
+controllato.
+
+Per misurare solo i thread batch sullo stesso 4B, chiudere prima la chat e
+usare la porta 5017 libera. Da PowerShell nella radice del repository:
+
+```powershell
+py -3 offline-runtime\benchmark_heavy.py --mode prefill-threads --engine offline-runtime\engine\llama-server.exe --model "C:\Users\matri\Downloads\GPTina offline\NOME_ESATTO.gguf" --output "offline-runtime\benchmarks\prefill-threads-i3-2100.jsonl"
+```
+
+Sostituire il nome del file con quello reale. Il test avvia tre volte il
+motore, mantenendo `-t 2 -c 1024 -b 256 -ub 128 -np 1` e variando solo
+`-tb` fra 2, 3 e 4. Ogni avvio invia due richieste identiche; confrontare
+**solo le righe cold** per il throughput del prefill. Le righe warm servono
+a osservare il riuso sul prompt identico e possono avere pochissimi token
+realmente rielaborati: il loro `prompt_tok_s` non è comparabile ai cold.
+Il prompt di prova è fisso e più lungo del precedente benchmark breve;
+`prompt_tokens` nel JSONL permette di verificarne la dimensione reale.
+Ripetere la matrice con carico di fondo simile se le differenze sono piccole.
+Il prompt artificiale uguale due volte non prova che i due turni della chat
+GPTina condividano lo stesso prefisso: quella va misurata separatamente.
+
+I consigli esterni su KV q8, mlock, no-mmap, affinità e guadagni numerici
+restano ipotesi. La documentazione llama.cpp distingue `-t` (generazione) e
+`-tb` (prompt/batch) e descrive la cache del prefisso comune nello stesso
+slot; non dimostra un vantaggio sul PC di Alberto senza questa misura.
