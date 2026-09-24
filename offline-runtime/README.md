@@ -126,6 +126,21 @@ Impostazioni conservative:
 - GPU layers 0;
 - Flash Attention off.
 
+Il launcher 2.1 permette di cambiare senza ricompilare **Thread generazione**
+(`-t`), **Thread prompt** (`-tb`), **Batch** (`-b`), **Micro-batch** (`-ub`),
+Context, Max risposta e il file GGUF. Salva i valori nel file locale ignorato
+da Git `.gptina_app_config.json`. Ferma l'app e riavviala per applicare i
+parametri del motore; il launcher rifiuta di riutilizzare un processo già
+attivo, perché `/props` non permette di verificarne tutti i flag.
+
+Valori iniziali: `-t 2 -tb 2 -b 256 -ub 128 -c 1024 -np 1 -ngl 0`.
+Per provare il risultato già misurato sul PC di Alberto si può cambiare
+**solo Thread prompt da 2 a 4**, mantenendo lo stesso modello e gli altri
+campi. Quel benchmark ha ridotto il prefill cold di circa 20 secondi su 282
+token, con maggior carico CPU; non garantisce lo stesso guadagno nella chat.
+Micro-batch non può superare Batch. I parametri di compilazione AVX/SSE
+restano propri della singola build Sandy Bridge e non sono opzioni runtime.
+
 Il campo **Max risposta** del launcher viene propagato anche al bridge tramite:
 
 `offline-runtime\.gptina_runtime_config.json`
