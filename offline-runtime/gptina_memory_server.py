@@ -295,7 +295,9 @@ def semantic_candidates(question: str, profile: str, limit: int):
             from gptina_semantic_index import SemanticIndex
             from gptina_offline_index import OfflineIndex
             _SEMANTIC_INDEX = SemanticIndex(OfflineIndex())
-        return _SEMANTIC_INDEX.search(question, profile, limit)
+        # Classification can be wrong for paraphrases. Search owner-filtered
+        # personal domains together, while keeping technical queries isolated.
+        return _SEMANTIC_INDEX.search(question, "technical" if profile == "technical" else "all", limit)
 
 
 def combine_candidates(lexical: list[dict], semantic: list[dict], limit: int):
@@ -310,9 +312,10 @@ def combine_candidates(lexical: list[dict], semantic: list[dict], limit: int):
             if path not in items or (strong_phrase and group is lexical):
                 items[path] = item
     ranked = sorted(scores, key=lambda p: (-scores[p], p))
-    # A dense match can surface paraphrases, but must not evict the best FTS
-    # source from the tiny context budget. This holds for every memory domain.
-    anchor = lexical[0]["path"] if lexical and limit >= 2 else None
+    # Protect only a high-confidence FTS hit. Lower-scoring term matches must
+    # still yield to semantic evidence when the question is a paraphrase.
+    anchor = (lexical[0]["path"] if lexical and limit >= 2
+              and lexical[0].get("score", 0) >= 16 else None)
     paths = ([anchor] if anchor else []) + [path for path in ranked if path != anchor]
     return [items[path] for path in paths[:limit]]
 
