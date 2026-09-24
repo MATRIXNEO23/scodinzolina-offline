@@ -54,6 +54,29 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(calls[0][1], 90.0)
         self.assertEqual(elapsed, 350)
 
+    def test_how_you_called_me_uses_the_answer_bearing_shared_language_line(self):
+        shared = (HERE.parent / "SHARED_LANGUAGE.md").read_text(encoding="utf-8")
+        original = mod.http_json
+        try:
+            def response(url, timeout=20.0):
+                if "/read?" in url:
+                    return {"content": shared}
+                return {"results": [{"path": "SHARED_LANGUAGE.md",
+                                     "snippet": "Ci hanno sgamati: battuta nata quando la chat..."},
+                                    {"path": "GPTINA_SELF_PORTRAIT.md",
+                                     "snippet": "Prima cosa: non imitarmi..."}], "scan_ms": 442}
+            mod.http_json = response
+            question = "Come ti chiamavo quando facevi la monella?"
+            found, elapsed = mod.retrieve_memory(
+                question, dict(mod.DEFAULT_CONFIG, semantic_retrieval=True, memory_items=2),
+                mod.memory_route(question))
+        finally:
+            mod.http_json = original
+        excerpt = mod.compact_memory(found[:1], {"memory_snippet_chars": 200})
+        self.assertEqual(found[0]["path"], "SHARED_LANGUAGE.md")
+        self.assertIn("GPTina: Versione più birichina", excerpt)
+        self.assertEqual(elapsed, 442)
+
     def test_semantic_failure_retries_fts_multi_search(self):
         calls = []
         original = mod.http_json
