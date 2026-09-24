@@ -63,9 +63,12 @@ def main():
         dense_items = semantic.search(question, route)
         dense = [item["path"] for item in dense_items]
         query_ms = round((time.perf_counter() - started) * 1000)
+        broad_items = semantic.search(question, "all") if route != "all" else dense_items
+        broad = [item["path"] for item in broad_items]
         lexical = index.search(extract_search_queries(question), 8,
                                route)
         fused = combine_candidates(lexical, dense_items, 3)
+        broad_fused = combine_candidates(lexical, broad_items, 3)
         fused_paths = [item["path"] for item in fused]
         lexical_paths = [item["path"] for item in lexical]
         def rank(paths):
@@ -76,6 +79,8 @@ def main():
             "route": route,
             "dense_rank": rank(dense), "lexical_rank": rank(lexical_paths),
             "fused_rank": rank(fused_paths),
+            "broad_dense_rank": rank(broad),
+            "broad_fused_rank": rank([item["path"] for item in broad_fused]),
             "query_ms": query_ms, "dense_top3": dense[:3],
             "domain_top2": semantic.domain_scores(question)[:2],
         })
@@ -84,7 +89,7 @@ def main():
         output[category + "_summary"] = {
             name + "_at_2": sum(case[name + "_rank"] is not None and
                                 case[name + "_rank"] <= 2 for case in subset)
-            for name in ("lexical", "dense", "fused")
+            for name in ("lexical", "dense", "fused", "broad_dense", "broad_fused")
         }
         output[category + "_summary"]["total"] = len(subset)
     print(json.dumps(output, ensure_ascii=False, indent=2))
