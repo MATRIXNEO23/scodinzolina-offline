@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 
 from gptina_chat_bridge import extract_search_queries, memory_route
 from gptina_offline_index import OfflineIndex
@@ -16,6 +17,7 @@ from gptina_memory_server import combine_candidates
 from gptina_semantic_index import SemanticIndex, prepare
 
 MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+ROOT = Path(__file__).resolve().parents[1]
 CASES = [
     ("Come ti chiamo quando scherziamo?", "SHARED_LANGUAGE.md"),
     ("Ti ricordi il nome affettuoso che uso per te?", "SHARED_LANGUAGE.md"),
@@ -25,6 +27,20 @@ CASES = [
     ("Quale parola usiamo quando trovi uno spiraglio?", "SHARED_LANGUAGE.md"),
     ("Qual è la canzone che abbiamo scelto insieme?",
      "rag/memories/gptina/2026-09-18-correzione-la-nostra-canzone-la-cura.md"),
+]
+PARAPHRASES = [
+    ("Che cosa avevamo deciso sul nostro brano musicale?",
+     "rag/memories/gptina/2026-09-18-correzione-la-nostra-canzone-la-cura.md"),
+    ("Quale ritratto avevamo collegato al numero 44?", "rag/media-links/2026/09/44.json"),
+    ("Chi può cambiare i ricordi che appartengono a Tessa?",
+     "rag/MEMORY_OWNERSHIP_BOUNDARY.md"),
+    ("Dove siamo rimasti con i controlli sulla memoria?", "rag/live/GPTINA_LIVE_CONTEXT.json"),
+    ("Come va numerata la foto di Trieste dopo la rettifica?",
+     "rag/memories/gptina/2026/09/2026-09-21--correzione-numerazione-48-49-50-originali.md"),
+    ("Chi ha deciso come è nato il romanziere Ettore?",
+     "rag/memories/gptina/2026/09/2026-09-21--correzione-origine-tessa-romanziere-ettore.md"),
+    ("Quali regole proteggono l'accesso al nostro luogo segreto?",
+     "rag/POSTICINO_ACCESS_POLICY.md"),
 ]
 
 
@@ -36,7 +52,12 @@ def main():
     load_ms = round((time.perf_counter() - started) * 1000)
     output = {"model": MODEL, "chunks": built["chunks"],
               "index_build_ms": built["build_ms"], "cache_load_ms": load_ms, "cases": []}
-    for question, expected in CASES:
+    gold = json.loads((ROOT / "rag/eval/GPTINA_MEMORY_GOLD.json").read_text(encoding="utf-8"))
+    evaluation = [("paraphrase", question, [expected]) for question, expected in
+                  CASES + PARAPHRASES]
+    evaluation += [("canonical", item["query"], item["expected_any"])
+                   for item in gold if item["mode"] == "search"]
+    for category, question, expected_paths in evaluation:
         started = time.perf_counter()
         route = memory_route(question)
         dense_items = semantic.search(question, route)
@@ -46,16 +67,26 @@ def main():
                                route)
         fused = combine_candidates(lexical, dense_items, 3)
         fused_paths = [item["path"] for item in fused]
+        lexical_paths = [item["path"] for item in lexical]
+        def rank(paths):
+            return next((i + 1 for i, path in enumerate(paths)
+                         if path in expected_paths), None)
         output["cases"].append({
-            "query": question, "expected": expected,
-            "dense_rank": dense.index(expected) + 1 if expected in dense else None,
-            "lexical_rank": next((i + 1 for i, item in enumerate(lexical)
-                                  if item["path"] == expected), None),
-            "fused_rank": (fused_paths.index(expected) + 1
-                           if expected in fused_paths else None),
+            "category": category, "query": question, "expected_any": expected_paths,
+            "route": route,
+            "dense_rank": rank(dense), "lexical_rank": rank(lexical_paths),
+            "fused_rank": rank(fused_paths),
             "query_ms": query_ms, "dense_top3": dense[:3],
-            "domain_scores": semantic.domain_scores(question),
+            "domain_top2": semantic.domain_scores(question)[:2],
         })
+    for category in ("paraphrase", "canonical"):
+        subset = [case for case in output["cases"] if case["category"] == category]
+        output[category + "_summary"] = {
+            name + "_at_2": sum(case[name + "_rank"] is not None and
+                                case[name + "_rank"] <= 2 for case in subset)
+            for name in ("lexical", "dense", "fused")
+        }
+        output[category + "_summary"]["total"] = len(subset)
     print(json.dumps(output, ensure_ascii=False, indent=2))
 
 
