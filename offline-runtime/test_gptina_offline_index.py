@@ -26,13 +26,24 @@ class OfflineIndexTests(unittest.TestCase):
             if case["mode"] != "search":
                 continue
             with self.subTest(case=case["id"]):
+                route = bridge.memory_route(case["query"])
                 results, _, _ = index.search(
                     bridge.extract_search_queries(case["query"]),
-                    max(8, case["top_k"]), "all",
+                    max(8, case["top_k"]), route if route != "technical" else "all",
                 )
                 paths = [item["path"] for item in results]
                 self.assertTrue(any(path in paths for path in case["expected_any"]), paths)
                 self.assertFalse(any(path in paths for path in case.get("forbidden", [])), paths)
+
+    def test_visual_correction_without_visual_word_in_filename(self):
+        query = "correzione numerazione immagini 48 49 50 originali"
+        result, _, _ = index.search(bridge.extract_search_queries(query), 2, "visual")
+        self.assertEqual(result[0]["path"],
+            "rag/memories/gptina/2026/09/2026-09-21--correzione-numerazione-48-49-50-originali.md")
+        excerpt = bridge.compact_memory(result, dict(bridge.DEFAULT_CONFIG,
+            memory_snippet_chars=300))
+        self.assertIn("Trieste non è la 48 ma la **50**", excerpt)
+        self.assertNotIn("schema_version", excerpt)
 
     def test_song_question_and_visual_number_fit_short_prompts(self):
         song, _, _ = index.search(

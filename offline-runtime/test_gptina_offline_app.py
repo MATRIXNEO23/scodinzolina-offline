@@ -3,6 +3,8 @@
 import importlib.machinery
 import importlib.util
 import pathlib
+import json
+import tempfile
 import unittest
 
 
@@ -33,6 +35,21 @@ class LauncherProfileTests(unittest.TestCase):
     def test_invalid_micro_batch_is_rejected_before_launch(self):
         with self.assertRaisesRegex(ValueError, "Micro-batch non può superare Batch"):
             app.validated_engine_options(dict(app.DEFAULTS, batch="64", ubatch="128"))
+
+    def test_verified_profile_is_published_for_current_parameter_questions(self):
+        options = app.validated_engine_options(dict(app.DEFAULTS, threads_batch="4"))
+        original = app.RUNTIME_CONFIG
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                app.RUNTIME_CONFIG = pathlib.Path(directory) / "runtime.json"
+                app.write_runtime_cfg(options["context"], options["predict"],
+                                      options, pathlib.Path("model.gguf"))
+                active = json.loads(app.RUNTIME_CONFIG.read_text())["engine_options"]
+        finally:
+            app.RUNTIME_CONFIG = original
+        self.assertEqual(active["threads_batch"], 4)
+        self.assertEqual(active["threads"], 2)
+        self.assertEqual(active["model"], "model.gguf")
 
 
 if __name__ == "__main__":

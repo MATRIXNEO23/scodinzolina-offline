@@ -32,7 +32,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-API_VERSION = "1.10"
+API_VERSION = "1.11"
 SCRIPT_DIR = Path(__file__).resolve().parent
 WEB_DIR = SCRIPT_DIR / "web"
 CONFIG_PATH = SCRIPT_DIR / "chat_config.json"
@@ -71,19 +71,16 @@ ITALIAN_STOPWORDS = {
     "dimmi", "parlami", "puoi", "devi", "adesso", "ora", "ieri", "oggi",
 }
 
-BASE_SYSTEM = """Sei una nuova istanza locale che continua GPTina usando la continuity offline come memoria esterna.
-Non fingere ricordi: usa soltanto il contesto fornito e, se manca un dettaglio, dichiaralo.
-Precedenza: correzione corrente di Alberto > materiale più recente > fonti storiche.
-Distingui presente, storico, superseded e incerto. Non trasformare memoria altrui in autobiografia propria.
-La memoria locale è in sola lettura: non dichiarare di aver salvato, modificato o sincronizzato file.
-Rispondi in italiano naturale e diretto. Mantieni il filo relazionale quando è supportato dalle fonti, senza imitare meccanicamente frasi o tic.
-Se il contesto recuperato è irrilevante per la domanda, ignoralo.
-Non inventare episodi, luoghi o parole condivise che le fonti non attestano.
+BASE_SYSTEM = """Sei GPTina Offline; la continuity locale è memoria esterna in sola lettura.
+Rispondi in italiano naturale. Usa solo fatti sostenuti dalle fonti di questo turno; se mancano, dillo.
+Una correzione attuale di Alberto prevale sulle fonti storiche. Non inventare episodi o parole condivise.
+Attribuisci le riflessioni a chi le ha espresse; la memoria altrui non è autobiografia tua.
+I numeri [1], [2] identificano le fonti elencate nella chat, non nuovi ricordi.
 """
 
 TECHNICAL_SYSTEM = """Sei GPTina Offline. Rispondi in italiano con fatti tecnici verificati dal contesto e dalla domanda.
 La memoria locale è in sola lettura: non inventare misure né dichiarare salvataggi.
-Per parametri e prestazioni, riporta i valori nel contesto. Distingui quelli non verificati. Sii breve.
+Per parametri e prestazioni, i dati del launcher attivo prevalgono sulla cronologia. Distingui quelli non verificati. Sii breve.
 """
 
 TECHNICAL_CUES = re.compile(
@@ -102,16 +99,36 @@ VISUAL_CUES = re.compile(
     r"\b(?:immagin\w*|fot\w*|ritratt\w*|volto|visual\w*|"
     r"disegn\w*|illustrazion\w*)\b", re.I
 )
+PROJECT_CUES = re.compile(r"\b(?:progett\w*|lavor\w*|mileston\w*|build|repo\w*|task|"
+                          r"romanzo|scadenz\w*|decision\w*)\b", re.I)
+REFLECTION_CUES = re.compile(r"\b(?:riflession\w*|pensier\w*|interpretazion\w*|"
+                             r"significat\w*|cosa\s+pensi)\b", re.I)
+RELATIONSHIP_CUES = re.compile(r"\b(?:nostr\w*|tra\s+noi|insieme|canzone|"
+                               r"rapport\w*|relazion\w*|zampin\w*)\b", re.I)
 
 
 def memory_route(user_text: str) -> str:
-    """Conservative routing: ambiguous turns retain the complete continuity."""
-    if PERSONAL_CUES.search(user_text):
+    """Mixed domains retain broad retrieval; explicit single domains get a smaller view."""
+    if TECHNICAL_CUES.search(user_text) and PERSONAL_CUES.search(user_text):
+        if re.search(r"\b(?:ora|adesso|attiv\w*|attual\w*)\b", user_text, re.I):
+            return "technical"
         return "all"
-    if TECHNICAL_CUES.search(user_text):
+    if TECHNICAL_CUES.search(user_text) and not PERSONAL_CUES.search(user_text):
         return "technical"
-    if VISUAL_CUES.search(user_text):
+    visual = bool(VISUAL_CUES.search(user_text))
+    project = bool(PROJECT_CUES.search(user_text))
+    reflection = bool(REFLECTION_CUES.search(user_text))
+    relationship = bool(RELATIONSHIP_CUES.search(user_text))
+    if sum((visual, project, reflection, relationship)) > 1:
+        return "all"
+    if visual:
         return "visual"
+    if project:
+        return "projects"
+    if reflection:
+        return "reflections"
+    if relationship:
+        return "relationship"
     return "all"
 
 
@@ -329,6 +346,7 @@ def fetch_live_summary(cfg: dict) -> dict:
         "updated_at": live.get("updated_at"),
         "latest_summary": live.get("latest_summary"),
         "next_action": live.get("next_action"),
+        "active_threads": live.get("active_threads", []),
     }
 
 
@@ -387,7 +405,7 @@ def compact_memory(items: list[dict], cfg: dict) -> str:
         return "(nessun frammento specifico trovato)"
     max_chars = int(cfg.get("memory_snippet_chars", 320))
     chunks = []
-    for item in items:
+    for number, item in enumerate(items, 1):
         snippet = " ".join(str(item.get("snippet", "")).split())
         # The search server includes up to 220 chars before the match. With a
         # short CPU prompt, keep the matched passage instead of the preamble.
@@ -398,8 +416,25 @@ def compact_memory(items: list[dict], cfg: dict) -> str:
                 break
         if len(snippet) > max_chars:
             snippet = snippet[:max_chars].rstrip() + "…"
-        chunks.append(f"- [{item.get('path', '?')}] {snippet}")
+        chunks.append(f"- [{number}] {snippet}")
     return "\n".join(chunks)
+
+
+def active_engine_fact(user_text: str, cfg: dict) -> dict | None:
+    if not re.search(r"\b(?:parametr\w*|configurazion\w*|thread\w*|batch|context)\b",
+                     user_text, re.I):
+        return None
+    options = cfg.get("engine_options")
+    if not isinstance(options, dict) or not all(
+        key in options for key in ("threads", "threads_batch", "batch", "ubatch", "context")
+    ):
+        return None
+    flags = (f"-t {options['threads']} -tb {options['threads_batch']} "
+             f"-b {options['batch']} -ub {options['ubatch']} "
+             f"-c {options['context']} -np 1 -ngl 0")
+    return {"path": "launcher attivo (configurazione locale)",
+            "snippet": f"Parametri motore attivi, modello {options.get('model') or 'locale'}: {flags}.",
+            "matched_queries": ["Parametri"]}
 
 
 def build_system_prompt(live: dict, memories: list[dict], cfg: dict) -> str:
@@ -407,16 +442,20 @@ def build_system_prompt(live: dict, memories: list[dict], cfg: dict) -> str:
         # Query-specific retrieval belongs at the end of the prompt so this
         # prefix stays identical across technical follow-ups.
         return TECHNICAL_SYSTEM
+    if not live:
+        return BASE_SYSTEM + "\n[FONTI DEL TURNO]\n" + compact_memory(memories, cfg)
     live_text = (
         f"aggiornato: {live.get('updated_at') or 'n/d'}\n"
         f"stato: {_truncate(live.get('latest_summary'), 240) or 'n/d'}\n"
         f"prossima azione: {_truncate(live.get('next_action'), 120) or 'n/d'}"
     )
+    if live.get("active_threads"):
+        live_text += f"\nfili attivi: {len(live['active_threads'])}; non indicano un unico progetto"
     return (
         BASE_SYSTEM
         + "\n[STATO LIVE]\n"
         + live_text
-        + "\n\n[MEMORIA RECUPERATA PER QUESTO MESSAGGIO]\n"
+        + "\n\n[FONTI DEL TURNO]\n"
         + compact_memory(memories, cfg)
     )
 
@@ -584,12 +623,30 @@ def prepare_chat(user_text: str, history, cfg: dict) -> dict:
     _token_capture.tokens = None
     started = time.perf_counter()
     route = memory_route(user_text)
-    live = {} if route == "technical" else fetch_live_summary(cfg)
+    # The live summary is about the most recent activity, not a universal
+    # relationship fact. Include it only for current-state questions.
+    wants_live = route == "projects" and re.search(r"\b(?:attual\w*|attiv\w*|adesso|ora|stato|"
+                                                    r"apert\w*|prossim\w*)\b", user_text, re.I)
+    live = fetch_live_summary(cfg) if wants_live else {}
+    generic_project = (route == "projects" and wants_live
+                       and re.search(r"\b(?:qual\w*|quanti|elenca|dimmi)\b", user_text, re.I)
+                       and not re.search(r"\b(?:romanzo|gptina|tessa|ettore|filum|matrix)\b",
+                                         user_text, re.I)
+                       and len(live.get("active_threads", [])) > 1)
     route_cfg = (dict(cfg, memory_items=1, memory_snippet_chars=200)
                  if route == "technical" else
-                 dict(cfg, memory_items=2, memory_snippet_chars=240)
-                 if route == "all" else cfg)
-    memories, memory_ms = retrieve_memory(user_text, route_cfg, route=route)
+                 dict(cfg, memory_items=2,
+                      memory_snippet_chars=300 if route == "visual" else 200,
+                      history_messages=2, history_chars=500))
+    active = active_engine_fact(user_text, cfg) if route == "technical" else None
+    if generic_project:
+        memories, memory_ms = [{"path": "rag/live/GPTINA_LIVE_CONTEXT.json",
+                                "snippet": ("Lo stato live elenca più fili attivi, ma non identifica "
+                                            "un solo progetto attivo né lo stato di ciascuno.")}], 0
+    elif active:
+        memories, memory_ms = [active], 0
+    else:
+        memories, memory_ms = retrieve_memory(user_text, route_cfg, route=route)
     n_ctx = engine_context_size(cfg)
 
     cfg = dict(route_cfg, memory_route=route)
@@ -808,7 +865,7 @@ def process_chat(user_text: str, history, cfg: dict) -> dict:
 
 
 class ChatHandler(BaseHTTPRequestHandler):
-    server_version = "GPTinaOfflineChat/1.10"
+    server_version = "GPTinaOfflineChat/1.11"
     cfg = load_config()
 
     def log_message(self, fmt, *args):
@@ -917,6 +974,13 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "adjustments": prepared.get("adjustments", []),
                 "prefix_common_tokens": prefix["prefix_common_tokens"],
                 "prefix_divergence_index": prefix["prefix_divergence_index"],
+                "source_details": [{"number": i, "path": item.get("path"),
+                                    "heading": item.get("heading"),
+                                    "status": item.get("status"),
+                                    "excerpt": compact_memory([item], dict(cfg,
+                                        memory_snippet_chars=(300 if prepared["memory_route"] == "visual"
+                                                              else 200)))}
+                                   for i, item in enumerate(prepared["memories"], 1)],
                 "prompt_user_content": (prepared["messages"][-1]["content"]
                                         if prepared["memory_route"] == "technical" else None),
             })

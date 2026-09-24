@@ -29,6 +29,13 @@ STOPWORDS = {
     "quando", "ricordi", "ricordo", "se", "si", "sono", "su", "te", "ti", "tu",
     "un", "una", "uno", "voi",
 }
+DOMAIN_KINDS = {
+    "relationship": {"gptina_memory", "fast_router", "shared_language",
+                     "self_portrait", "historical_live_thread", "chronicle"},
+    "projects": {"gptina_memory", "checkpoint", "live_context", "current_router",
+                 "fast_router"},
+    "reflections": {"gptina_memory", "reflection", "self_portrait", "fast_router"},
+}
 
 
 def tokenize(value: str) -> list[str]:
@@ -140,6 +147,16 @@ class OfflineIndex:
                     content = str(obj.get("text") or obj.get("memory") or obj.get("content") or content)
                 except ValueError:
                     pass
+            if rel.startswith("rag/media-links/") and path.suffix == ".json":
+                try:
+                    obj = json.loads(content)
+                    content = (f"Immagine: {obj.get('image_id', '')}. "
+                               f"File: {obj.get('image_path', '')}. "
+                               f"Cue: {', '.join(obj.get('cue', []))}. "
+                               f"Stato: {obj.get('status', '')}. "
+                               f"Memorie collegate: {', '.join(obj.get('memory_refs', []))}.")
+                except (ValueError, TypeError):
+                    pass
             memory_id, status, replaces = frontmatter(content)
             override = manifest.get("status_overrides", {}).get(rel)
             if override:
@@ -171,8 +188,16 @@ class OfflineIndex:
         for rel, (content, spec, status, _replaces) in records.items():
             if status in {"invalidated", "superseded"}:
                 continue
+            # YAML metadata is for routing/provenance, not the short factual
+            # excerpt shown to the model. A hit on memory_id otherwise sends
+            # only a truncated header instead of the actual correction.
+            indexed_content = content
+            if content.startswith("---\n"):
+                boundary = content.find("\n---\n", 4)
+                if boundary >= 0:
+                    indexed_content = content[boundary + 5:]
             for heading, chunk in chunks(
-                content,
+                indexed_content,
                 int(cfg.get("max_chars", 1400)),
                 int(cfg.get("overlap_chars", 220)),
                 int(cfg.get("min_chars", 120)),
@@ -212,15 +237,15 @@ class OfflineIndex:
         ).fetchall()
         ranked = []
         for row_id, source, heading, content, raw_rank in rows:
+            info = self.info[row_id]
+            if profile in DOMAIN_KINDS and info["kind"] not in DOMAIN_KINDS[profile]:
+                continue
             if profile == "visual" and not (
                 source == "rag/index/GPTINA_VISUAL_CHRONOLOGY.md"
                 or source.startswith("rag/media-links/")
-                or (source.startswith("rag/memories/gptina/") and any(
-                    cue in source for cue in ("visual", "immagin", "ritratt", "volto", "foto")
-                ))
+                or source.startswith("rag/memories/gptina/")
             ):
                 continue
-            info = self.info[row_id]
             score = -float(raw_rank) * float(info["priority"])
             source_words = source.replace("-", " ").replace("_", " ").casefold()
             heading_words = heading.casefold()

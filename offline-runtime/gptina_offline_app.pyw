@@ -19,9 +19,9 @@ from tkinter import (
 from tkinter import ttk
 from urllib.request import Request, urlopen
 
-APP_VERSION = "2.1"
-MEMORY_API_VERSION = "1.4"
-CHAT_API_VERSION = "1.10"
+APP_VERSION = "2.2"
+MEMORY_API_VERSION = "1.5"
+CHAT_API_VERSION = "1.11"
 
 SCRIPT_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 ENGINE_EXE = SCRIPT_DIR / "engine" / "llama-server.exe"
@@ -163,7 +163,8 @@ def save_cfg(cfg: dict) -> None:
     )
 
 
-def write_runtime_cfg(context: int, max_tokens: int) -> None:
+def write_runtime_cfg(context: int, max_tokens: int, options: dict | None = None,
+                      model: Path | None = None) -> None:
     payload = {
         "engine_base": "http://127.0.0.1:5001",
         "memory_base": "http://127.0.0.1:8765",
@@ -172,6 +173,18 @@ def write_runtime_cfg(context: int, max_tokens: int) -> None:
         "disable_thinking": True,
         "generation_timeout_seconds": 900,
     }
+    if options is not None:
+        payload["engine_options"] = {
+            "model": model.name if model else None,
+            "threads": options["threads"],
+            "threads_batch": options["threads_batch"],
+            "batch": options["batch"],
+            "ubatch": options["ubatch"],
+            "context": options["context"],
+            "predict": options["predict"],
+            "parallel": 1,
+            "gpu_layers": 0,
+        }
     RUNTIME_CONFIG.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -746,7 +759,7 @@ class App:
                     f"ATTENZIONE: context richiesto {options['context']}, context esposto dal motore {n_ctx}.",
                 )
 
-            write_runtime_cfg(options["context"], options["predict"])
+            write_runtime_cfg(options["context"], options["predict"], options, model)
 
             self.emit("status", "Avvio memoria…")
             memory = service_probe(PORT_MEMORY, "GPTina Offline Memory", MEMORY_API_VERSION)
