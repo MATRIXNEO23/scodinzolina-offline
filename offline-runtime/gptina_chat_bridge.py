@@ -32,7 +32,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-API_VERSION = "1.11"
+API_VERSION = "1.12"
 SCRIPT_DIR = Path(__file__).resolve().parent
 WEB_DIR = SCRIPT_DIR / "web"
 CONFIG_PATH = SCRIPT_DIR / "chat_config.json"
@@ -59,6 +59,7 @@ DEFAULT_CONFIG = {
     "context_size": 1024,
     "disable_thinking": True,
     "generation_timeout_seconds": 900,
+    "semantic_retrieval": False,
 }
 
 ITALIAN_STOPWORDS = {
@@ -361,6 +362,8 @@ def retrieve_memory(user_text: str, cfg: dict, route: str = "all") -> tuple[list
         return [], 0
 
     pairs = [("limit", str(max(1, limit))), ("profile", route)]
+    if cfg.get("semantic_retrieval") and route != "technical":
+        pairs.append(("semantic", "1"))
     pairs.extend(("q", q) for q in queries)
     params = urlencode(pairs)
     started = time.perf_counter()

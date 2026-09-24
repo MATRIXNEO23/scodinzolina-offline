@@ -34,6 +34,27 @@ disponibile manualmente su `http://127.0.0.1:8766` se serve un fallback.
 
 ## Streaming
 
+### Recupero semantico sperimentale
+
+La ricerca semantica è **disattivata** finché non supera le misure sul PC target.
+Usa un modello multilingue ONNX aggiuntivo (circa 220 MB). La continuity resta
+in sola lettura; vettori e modello sono cache locali ignorate da Git.
+
+Per prepararla una sola volta, con rete disponibile, dalla radice della repo:
+
+```powershell
+py -3 -m pip install -r offline-runtime/requirements-semantic.txt
+py -3 offline-runtime/gptina_semantic_index.py
+```
+
+La preparazione stampa frammenti e millisecondi. Una modifica delle fonti
+invalida l'indice e richiede di ripetere il secondo comando. Per attivarla
+aggiungere `"semantic_retrieval": true` in `offline-runtime/chat_config.json`,
+poi riavviare tutta l'app. Se la cache non è pronta, il runtime continua con
+FTS5 e registra `semantic_unavailable`; non scarica né costruisce durante
+una domanda. L'esperimento deve misurare qualità delle fonti, primo token e
+RAM sul vero i3 prima di tenere questa opzione attiva.
+
 La finestra interna e la pagina web opzionale usano lo stesso `/chat/stream`.
 
 I token vengono mostrati mentre il motore li genera. Non è più necessario aspettare la fine dell'intera risposta per vedere testo.

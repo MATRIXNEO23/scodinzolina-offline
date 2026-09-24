@@ -12,13 +12,14 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-API_VERSION = "1.5"
+API_VERSION = "1.6"
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 CONFIG_PATH = REPO_ROOT / "rag" / "OFFLINE_RECOVERY_CONFIG.json"
@@ -38,6 +39,8 @@ MAX_READ_BYTES = 512_000
 DEFAULT_SEARCH_LIMIT = 12
 MAX_SEARCH_LIMIT = 50
 MAX_MULTI_QUERIES = 8
+_SEMANTIC_INDEX = None
+_SEMANTIC_LOCK = threading.Lock()
 SEARCH_PROFILES = {"all", "technical", "visual", "relationship", "projects", "reflections"}
 TECHNICAL_PATHS = (
     "offline-runtime/README.md",
@@ -284,6 +287,31 @@ def search_memory_multi(queries, limit: int = DEFAULT_SEARCH_LIMIT, profile: str
     return results[:limit], elapsed_ms
 
 
+def semantic_candidates(question: str, profile: str, limit: int):
+    """An explicitly prepared local cache; never download or rebuild on a request."""
+    global _SEMANTIC_INDEX
+    with _SEMANTIC_LOCK:
+        if _SEMANTIC_INDEX is None:
+            from gptina_semantic_index import SemanticIndex
+            from gptina_offline_index import OfflineIndex
+            _SEMANTIC_INDEX = SemanticIndex(OfflineIndex())
+        return _SEMANTIC_INDEX.search(question, profile, limit)
+
+
+def combine_candidates(lexical: list[dict], semantic: list[dict], limit: int):
+    """Rank independent evidence paths; keep the best snippet for each path."""
+    strong_phrase = any(item.get("matched_queries") for item in lexical[:2])
+    lexical_weight, semantic_weight = (2.0, 1.0) if strong_phrase else (1.0, 2.0)
+    scores, items = {}, {}
+    for group, weight in ((lexical, lexical_weight), (semantic, semantic_weight)):
+        for rank, item in enumerate(group):
+            path = item["path"]
+            scores[path] = scores.get(path, 0.0) + weight / (rank + 2)
+            if path not in items or (strong_phrase and group is lexical):
+                items[path] = item
+    return [items[path] for path in sorted(scores, key=lambda p: (-scores[p], p))[:limit]]
+
+
 def recover_current() -> dict:
     live_path = REPO_ROOT / "rag" / "live" / "GPTINA_LIVE_CONTEXT.json"
     if not live_path.is_file():
@@ -324,7 +352,7 @@ def recover_current() -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "GPTinaOfflineMemory/1.4"
+    server_version = "GPTinaOfflineMemory/1.6"
 
     def _send_json(self, payload, status=HTTPStatus.OK):
         body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
@@ -406,6 +434,15 @@ class Handler(BaseHTTPRequestHandler):
                     results, scan_ms = search_memory_multi(queries, limit=limit, profile=profile)
                     build_ms = 0
                     backend = "text_technical"
+                if (qs.get("semantic", ["0"])[0] == "1" and profile in
+                        {"all", "relationship", "projects", "reflections"} and queries):
+                    try:
+                        candidates = semantic_candidates(queries[0], profile, max(8, limit))
+                        results = combine_candidates(results, candidates, limit)
+                        backend += "+semantic"
+                    except (ImportError, OSError, ValueError, RuntimeError) as exc:
+                        backend += "+semantic_unavailable"
+                        print(f"[GPTina Memory] Semantica non disponibile: {exc}")
                 self._send_json({
                     "ok": True,
                     "queries": queries,
