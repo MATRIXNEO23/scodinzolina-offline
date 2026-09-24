@@ -2,6 +2,8 @@ name: Semantic retrieval probe
 on:
   push:
     branches: [semantic-probe]
+  pull_request:
+    branches: [main]
 jobs:
   probe:
     runs-on: windows-latest
