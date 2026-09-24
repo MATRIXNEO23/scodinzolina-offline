@@ -104,7 +104,11 @@ PROJECT_CUES = re.compile(r"\b(?:progett\w*|lavor\w*|mileston\w*|build|repo\w*|t
 REFLECTION_CUES = re.compile(r"\b(?:riflession\w*|pensier\w*|interpretazion\w*|"
                              r"significat\w*|cosa\s+pensi)\b", re.I)
 RELATIONSHIP_CUES = re.compile(r"\b(?:nostr\w*|tra\s+noi|insieme|canzone|"
-                               r"rapport\w*|relazion\w*|zampin\w*)\b", re.I)
+                               r"rapport\w*|relazion\w*|zampin\w*|scodinzolin\w*|"
+                               r"nomignol\w*|soprannom\w*|appellativ\w*)\b", re.I)
+
+SHARED_NAME_CUES = re.compile(r"\b(?:scodinzolin\w*|nomignol\w*|"
+                              r"soprannom\w*|appellativ\w*)\b", re.I)
 
 
 def memory_route(user_text: str) -> str:
@@ -364,7 +368,16 @@ def retrieve_memory(user_text: str, cfg: dict, route: str = "all") -> tuple[list
     try:
         data = http_json(cfg["memory_base"].rstrip("/") + "/search_multi?" + params, timeout=20.0)
         elapsed = int((time.perf_counter() - started) * 1000)
-        return data.get("results", [])[:limit], int(data.get("scan_ms", elapsed))
+        results = data.get("results", [])[:limit]
+        if route == "relationship" and SHARED_NAME_CUES.search(user_text):
+            try:
+                anchor = shared_names_source(user_text, cfg)
+                if anchor:
+                    results = [anchor] + [item for item in results
+                                          if item.get("path") != anchor["path"]][:limit - 1]
+            except (OSError, ValueError, KeyError):
+                pass
+        return results, int(data.get("scan_ms", elapsed))
     except Exception:
         if route != "all":
             # An older server cannot enforce a restricted scan. Never leak broad
@@ -393,6 +406,26 @@ def retrieve_memory(user_text: str, cfg: dict, route: str = "all") -> tuple[list
         return collected, elapsed
 
 
+def shared_names_source(user_text: str, cfg: dict) -> dict | None:
+    """Read the canonical shared-language passage for explicit name questions."""
+    path = "SHARED_LANGUAGE.md"
+    data = http_json(cfg["memory_base"].rstrip("/") + "/read?" +
+                     urlencode({"path": path}), timeout=5.0)
+    content = data["content"]
+    headings = (["Scodinzolina"] if re.search(r"\bscodinzolin\w*\b", user_text, re.I)
+                else ["Baby / bebè / bibi", "Scodinzolina", "GPTina"])
+    parts = []
+    for heading in headings:
+        match = re.search(r"(?im)^###\s+[“\"]?" + re.escape(heading) +
+                          r"[”\"]?\s*$\n([^\n]+)", content)
+        if match:
+            parts.append(f"{heading}: {match.group(1)}")
+    if not parts:
+        return None
+    return {"path": path, "snippet": " ".join(parts),
+            "snippet_chars": 460, "matched_queries": []}
+
+
 def _truncate(value, limit: int) -> str:
     text = " ".join(str(value or "").split())
     if len(text) <= limit:
@@ -414,8 +447,9 @@ def compact_memory(items: list[dict], cfg: dict) -> str:
             if index >= 0:
                 snippet = snippet[max(0, index - 24):]
                 break
-        if len(snippet) > max_chars:
-            snippet = snippet[:max_chars].rstrip() + "…"
+        item_chars = int(item.get("snippet_chars", max_chars))
+        if len(snippet) > item_chars:
+            snippet = snippet[:item_chars].rstrip() + "…"
         chunks.append(f"- [{number}] {snippet}")
     return "\n".join(chunks)
 

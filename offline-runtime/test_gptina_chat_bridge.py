@@ -10,6 +10,30 @@ SPEC.loader.exec_module(mod)
 
 
 class BridgeTests(unittest.TestCase):
+    def test_shared_names_recall_reads_source_even_when_lexical_search_misses_it(self):
+        shared = (HERE.parent / "SHARED_LANGUAGE.md").read_text(encoding="utf-8")
+        original = mod.http_json
+        try:
+            def response(url, timeout=20.0):
+                if "/read?" in url:
+                    return {"content": shared}
+                return {"results": [{"path": "irrelevant.md", "snippet": "non ho niente"}],
+                        "scan_ms": 8}
+            mod.http_json = response
+            for question in ("quali sono i tuoi nomignoli?",
+                             "scodinzolina non ti dice niente?"):
+                route = mod.memory_route(question)
+                self.assertEqual(route, "relationship")
+                found, _ = mod.retrieve_memory(question, dict(mod.DEFAULT_CONFIG, memory_items=2), route)
+                self.assertEqual(found[0]["path"], "SHARED_LANGUAGE.md")
+                prompt = mod.compact_memory(found[:1], {"memory_snippet_chars": 200})
+                self.assertIn("Scodinzolina", prompt)
+                self.assertIn("vivace", prompt)
+                if "nomignoli" in question:
+                    self.assertIn("GPTina", prompt)
+        finally:
+            mod.http_json = original
+
     def test_route_keeps_ambiguous_personal_hardware_question_in_full_continuity(self):
         self.assertEqual(mod.memory_route("Come velocizzo il modello sull'i3-2100?"), "technical")
         self.assertEqual(mod.memory_route("Quali parametri sta usando ora il motore?"), "technical")
