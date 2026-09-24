@@ -6,7 +6,7 @@ Runtime locale per usare un modello GGUF su llama.cpp insieme alla continuity of
 
 Percorso normale:
 
-`launcher → llama.cpp → memoria read-only → RAG/chat bridge → browser`
+`launcher → llama.cpp → memoria read-only → RAG/chat bridge → finestra chat nativa`
 
 KoboldCpp non è necessario.
 
@@ -25,11 +25,16 @@ L'app avvia:
 - llama.cpp: `127.0.0.1:5001`;
 - GPTina Memory: `127.0.0.1:8765`;
 - GPTina Chat/RAG: `127.0.0.1:8766`;
-- browser sulla chat.
+- finestra chat Tkinter nello stesso programma.
+
+La chat si apre automaticamente dopo l'avvio dei servizi. Il pulsante **Apri chat**
+la riporta in primo piano; chiuderla la nasconde senza perdere la conversazione.
+**Enter** invia e **Shift+Enter** inserisce una nuova riga. Il browser resta
+disponibile manualmente su `http://127.0.0.1:8766` se serve un fallback.
 
 ## Streaming
 
-La chat usa `/chat/stream`.
+La finestra interna e la pagina web opzionale usano lo stesso `/chat/stream`.
 
 I token vengono mostrati mentre il motore li genera. Non è più necessario aspettare la fine dell'intera risposta per vedere testo.
 
@@ -41,6 +46,11 @@ Sotto la risposta vengono mostrati, quando disponibili:
 - tempo al primo token;
 - token/sec di generazione;
 - prompt token/sec.
+
+Nella finestra interna il pulsante **Fonti ultimo turno** mostra i passaggi
+selezionati con i rispettivi percorsi. La finestra rimane reattiva durante la
+generazione: la rete è letta da un thread separato e solo il thread Tkinter
+aggiorna la grafica.
 
 ## Diagnostica ed errori
 
