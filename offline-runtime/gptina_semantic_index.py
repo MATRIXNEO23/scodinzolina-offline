@@ -17,6 +17,10 @@ from gptina_offline_index import DOMAIN_KINDS, OfflineIndex
 
 MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 CACHE = Path(__file__).resolve().parent / "semantic-cache"
+# Exact historical wording remains reachable via FTS5. Dense retrieval over
+# broad personal questions should first consider current, interpretable facts.
+BROAD_DENSE_EXCLUDED = {"gptina_transcript", "historical_snapshot",
+                        "legacy_message", "micro_checkpoint"}
 
 
 def corpus(index: OfflineIndex):
@@ -91,6 +95,8 @@ class SemanticIndex:
         for i, similarity in enumerate(scores):
             row = self.rows[i]
             if allowed is not None and row["kind"] not in allowed:
+                continue
+            if profile == "all" and row["kind"] in BROAD_DENSE_EXCLUDED:
                 continue
             source = row["source"]
             if profile == "visual" and not (
