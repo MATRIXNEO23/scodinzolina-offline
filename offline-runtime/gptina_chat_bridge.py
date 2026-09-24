@@ -32,7 +32,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-API_VERSION = "1.7"
+API_VERSION = "1.8"
 SCRIPT_DIR = Path(__file__).resolve().parent
 WEB_DIR = SCRIPT_DIR / "web"
 CONFIG_PATH = SCRIPT_DIR / "chat_config.json"
@@ -575,13 +575,18 @@ def prepare_chat(user_text: str, history, cfg: dict) -> dict:
 
     cfg = dict(route_cfg, memory_route=route)
     if route == "technical":
-        # Only the immediately preceding technical exchange can help this turn.
-        recent = history[-2:] if isinstance(history, list) else []
-        history = recent if (len(recent) == 2 and
-            all(isinstance(item, dict) for item in recent) and
-            recent[0].get("role") == "user" and
-            recent[1].get("role") == "assistant" and
-            memory_route(str(recent[0].get("content", ""))) == "technical") else []
+        # Preserve up to two contiguous technical exchanges for prefix reuse.
+        # The context fitter still removes the oldest pair if it does not fit.
+        recent = []
+        if isinstance(history, list):
+            for index in range(len(history) - 2, max(-1, len(history) - 5), -2):
+                pair = history[index:index + 2]
+                if (len(pair) != 2 or not all(isinstance(item, dict) for item in pair)
+                        or pair[0].get("role") != "user" or pair[1].get("role") != "assistant"
+                        or memory_route(str(pair[0].get("content", ""))) != "technical"):
+                    break
+                recent[:0] = pair
+        history = recent
     messages, fitted_memories, fit = fit_messages_to_context(
         user_text, history, live, memories, cfg, n_ctx
     )
@@ -778,7 +783,7 @@ def process_chat(user_text: str, history, cfg: dict) -> dict:
 
 
 class ChatHandler(BaseHTTPRequestHandler):
-    server_version = "GPTinaOfflineChat/1.7"
+    server_version = "GPTinaOfflineChat/1.8"
     cfg = load_config()
 
     def log_message(self, fmt, *args):

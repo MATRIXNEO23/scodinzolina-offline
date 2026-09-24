@@ -147,3 +147,30 @@ interpretare il confronto. Dopo l'aggiornamento chiudere le vecchie finestre
 GPTina, riavviare app 1.6 e fare tre domande tecniche consecutive nella stessa
 conversazione; inviare il JSONL locale per analisi. Il vecchio bridge API 1.6
 viene rifiutato dal launcher aggiornato.
+
+### Tre turni tecnici reali e correzione history
+
+Alberto ha ripetuto tre domande tecniche nella stessa chat app 1.6. Tutte le
+route erano `technical`, con la stessa fonte `TECHNICAL_RUNTIME_CONTEXT.md`,
+lo stesso hash del system, context 1024 e nessun adjustment del context fitter:
+
+| Turno | Prompt totale | LCP col precedente | cache_n | prompt_n | Primo token | Decode |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 232 | n/d | 0 | 232 | 63680 ms | 54 token, 2,618 tok/s |
+| 2 | 328 | 232 | 285 | 43 | 14110 ms | 43 token, 2,433 tok/s |
+| 3 | 322 | 195 | 195 | 127 | 41668 ms | 46 token, 2,454 tok/s |
+
+Il secondo turno riusa tutto il prefisso della richiesta precedente; il
+server riusa anche token generati (perciò `cache_n=285` è maggiore del LCP
+fra i due prompt, 232). Il terzo perde il prefisso della history perché il
+bridge teneva **soltanto l'ultimo scambio tecnico**: lo scambio del turno 1
+spariva anche se il context era lontano dal limite. Non è il RAG a cambiare
+in questa prova: hash system e fonte sono identici.
+
+App 1.7 / bridge API 1.8 conservano fino a due scambi tecnici contigui. Il
+context fitter esistente rimuove prima la coppia più vecchia se il prompt
+non entra. Route `all` e `visual`, testo del system, fonte RAG, modello e
+flag del motore non cambiano. Questa è una correzione mirata ai **tre turni
+misurati**: con ulteriori scambi la finestra di due coppie torna a scorrere.
+Serve ripetere le stesse domande dopo un riavvio pulito e confrontare i tre
+record del log; nessun nuovo beneficio è ancora stato misurato sul PC.

@@ -70,6 +70,27 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(len(prepared["messages"]), 4)
         self.assertNotIn("[STATO LIVE]", prepared["messages"][0]["content"])
 
+    def test_two_technical_exchanges_survive_until_context_fitting(self):
+        cfg = dict(mod.DEFAULT_CONFIG)
+        saved = mod.retrieve_memory, mod.engine_context_size, mod._count_tokens_safe
+        try:
+            mod.retrieve_memory = lambda *args, **kwargs: ([], 1)
+            mod.engine_context_size = lambda _cfg: 1024
+            mod._count_tokens_safe = lambda messages, _cfg: (300, False)
+            prepared = mod.prepare_chat("Quali parametri usa il motore?", [
+                {"role": "user", "content": "Ricordi la nostra canzone?"},
+                {"role": "assistant", "content": "La cura"},
+                {"role": "user", "content": "Quali thread usa la CPU?"},
+                {"role": "assistant", "content": "Due thread"},
+                {"role": "user", "content": "Quali parametri usa il motore?"},
+                {"role": "assistant", "content": "-t 2 -tb 2"},
+            ], cfg)
+        finally:
+            mod.retrieve_memory, mod.engine_context_size, mod._count_tokens_safe = saved
+        contents = [item["content"] for item in prepared["messages"]]
+        self.assertEqual(contents[1:-1], ["Quali thread usa la CPU?", "Due thread",
+                                          "Quali parametri usa il motore?", "-t 2 -tb 2"])
+
     def test_stream_finish_reason_length_is_detected(self):
         event = {"choices": [{"delta": {}, "finish_reason": "length"}]}
         parsed = mod.parse_openai_sse_line("data: " + json.dumps(event))
