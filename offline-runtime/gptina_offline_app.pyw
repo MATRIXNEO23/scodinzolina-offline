@@ -937,6 +937,9 @@ class App:
         raise RuntimeError(f"{label} non è diventato pronto: {last_error}")
 
     def start(self):
+        if self.preparing_semantic:
+            messagebox.showinfo("GPTina Offline", "Attendi che la preparazione dell'indice finisca.")
+            return
         try:
             model, options = self.validate()
         except Exception as exc:
@@ -944,7 +947,8 @@ class App:
             return
 
         semantic_enabled = self.semantic.get()
-        if semantic_enabled and not (SCRIPT_DIR / "semantic-cache" / "index.json").is_file():
+        if semantic_enabled and not all((SCRIPT_DIR / "semantic-cache" / name).is_file()
+                                        for name in ("index.json", "vectors.npz")):
             messagebox.showerror("GPTina Offline", "Premi 'Prepara indice' prima di attivare la memoria semantica.")
             return
         save_cfg({"model_path": str(model), **{key: str(value) for key, value in options.items()},
