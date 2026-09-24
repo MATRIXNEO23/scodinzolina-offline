@@ -19,7 +19,7 @@ from tkinter import (
 from tkinter import ttk
 from urllib.request import Request, urlopen
 
-APP_VERSION = "2.0"
+APP_VERSION = "2.1"
 MEMORY_API_VERSION = "1.4"
 CHAT_API_VERSION = "1.10"
 
@@ -39,9 +39,53 @@ PORT_CHAT = 8766
 DEFAULTS = {
     "model_path": "",
     "threads": "2",
+    "threads_batch": "2",
     "context": "1024",
     "predict": "160",
+    "batch": "256",
+    "ubatch": "128",
 }
+
+
+def validated_engine_options(values: dict) -> dict[str, int]:
+    """Validate options before saving them or launching a new engine process."""
+    labels = {
+        "threads": "Thread generazione", "threads_batch": "Thread prompt",
+        "context": "Context", "predict": "Max risposta",
+        "batch": "Batch", "ubatch": "Micro-batch",
+    }
+    options = {}
+    for key, label in labels.items():
+        try:
+            options[key] = int(values[key])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"{label}: inserisci un numero intero.") from exc
+
+    limits = {
+        "threads": (1, 4), "threads_batch": (1, 4),
+        "context": (512, 8192), "predict": (32, 1024),
+        "batch": (64, 1024), "ubatch": (32, 512),
+    }
+    for key, (low, high) in limits.items():
+        if not low <= options[key] <= high:
+            raise ValueError(f"{labels[key]}: usa un valore da {low} a {high}.")
+    if options["ubatch"] > options["batch"]:
+        raise ValueError("Micro-batch non può superare Batch.")
+    if options["predict"] >= options["context"] - 256:
+        raise ValueError("Max risposta è troppo alto rispetto al Context. Con Context 1024 usa 128-192 token.")
+    return options
+
+
+def engine_command(model: Path, options: dict[str, int]) -> list[str]:
+    return [
+        str(ENGINE_EXE), "-m", str(model),
+        "--host", "127.0.0.1", "--port", str(PORT_ENGINE),
+        "-t", str(options["threads"]), "-tb", str(options["threads_batch"]),
+        "-c", str(options["context"]), "-np", "1",
+        "-n", str(options["predict"]),
+        "-b", str(options["batch"]), "-ub", str(options["ubatch"]),
+        "-ngl", "0", "--flash-attn", "off", "--jinja",
+    ]
 
 
 def request_json(url: str, timeout: float = 1.5) -> dict:
@@ -331,8 +375,8 @@ class App:
     def __init__(self, root: Tk):
         self.root = root
         self.root.title(f"GPTina Offline {APP_VERSION}")
-        self.root.geometry("760x540")
-        self.root.minsize(680, 500)
+        self.root.geometry("760x590")
+        self.root.minsize(680, 550)
 
         self.procs: dict[str, subprocess.Popen] = {}
         self.handles = []
@@ -374,6 +418,18 @@ class App:
         self.predict = StringVar(value=cfg["predict"])
         Entry(row, width=7, textvariable=self.predict).pack(side=LEFT, padx=(4, 14))
 
+        row = Frame(box)
+        row.pack(fill=X, pady=5)
+        Label(row, text="Thread prompt:").pack(side=LEFT)
+        self.threads_batch = StringVar(value=cfg["threads_batch"])
+        Entry(row, width=5, textvariable=self.threads_batch).pack(side=LEFT, padx=(4, 14))
+        Label(row, text="Batch:").pack(side=LEFT)
+        self.batch = StringVar(value=cfg["batch"])
+        Entry(row, width=7, textvariable=self.batch).pack(side=LEFT, padx=(4, 14))
+        Label(row, text="Micro-batch:").pack(side=LEFT)
+        self.ubatch = StringVar(value=cfg["ubatch"])
+        Entry(row, width=7, textvariable=self.ubatch).pack(side=LEFT, padx=(4, 14))
+
         erow = Frame(box)
         erow.pack(fill=X, pady=(8, 4))
         self.engine_label = Label(erow, text="")
@@ -397,7 +453,7 @@ class App:
         self.log = Text(box, height=15, wrap="word")
         self.log.pack(fill=BOTH, expand=True, pady=(8, 0))
 
-        self._append_log("Profilo iniziale: 2 thread, context 1024, output 160 token.")
+        self._append_log("Profilo iniziale: 2 thread generazione e prompt, batch 256/128, context 1024.")
         self._append_log("La chat ora usa streaming: i token devono comparire mentre vengono generati.")
         self._append_log("Apri 'Diagnostica / errori' per vedere engine.log, memory.log e chat.log in tempo reale.")
 
@@ -553,25 +609,12 @@ class App:
         if not ENGINE_EXE.is_file():
             raise ValueError("Il motore non è installato. Premi 'Installa / aggiorna motore'.")
 
-        threads = int(self.threads.get())
-        context = int(self.context.get())
-        predict = int(self.predict.get())
-
-        if not 1 <= threads <= 8:
-            raise ValueError("Thread: usa un valore da 1 a 8.")
-        if not 512 <= context <= 8192:
-            raise ValueError("Context: usa un valore da 512 a 8192.")
-        if not 32 <= predict <= 1024:
-            raise ValueError("Max risposta: usa un valore da 32 a 1024.")
-
-        # With a small context, leave enough room for system + memory + current turn.
-        if predict >= context - 256:
-            raise ValueError(
-                "Max risposta è troppo alto rispetto al Context. "
-                "Con Context 1024 usa, per esempio, 128-192 token."
-            )
-
-        return model, threads, context, predict
+        options = validated_engine_options({
+            "threads": self.threads.get(), "threads_batch": self.threads_batch.get(),
+            "context": self.context.get(), "predict": self.predict.get(),
+            "batch": self.batch.get(), "ubatch": self.ubatch.get(),
+        })
+        return model, options
 
     def _prepare_log(self, name: str):
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -614,23 +657,17 @@ class App:
 
     def start(self):
         try:
-            model, threads, context, predict = self.validate()
+            model, options = self.validate()
         except Exception as exc:
             messagebox.showerror("GPTina Offline", str(exc))
             return
 
-        save_cfg({
-            "model_path": str(model),
-            "threads": str(threads),
-            "context": str(context),
-            "predict": str(predict),
-        })
-        write_runtime_cfg(context, predict)
+        save_cfg({"model_path": str(model), **{key: str(value) for key, value in options.items()}})
 
         self.start_button.configure(state="disabled")
         threading.Thread(
             target=self._start_worker,
-            args=(model, threads, context, predict),
+            args=(model, options),
             daemon=True,
         ).start()
 
@@ -642,7 +679,7 @@ class App:
                 f"Dettaglio: {probe.get('error')}"
             )
 
-    def _start_worker(self, model: Path, threads: int, context: int, predict: int):
+    def _start_worker(self, model: Path, options: dict[str, int]):
         try:
             self.emit("status", "Controllo porte e servizi…")
 
@@ -669,9 +706,9 @@ class App:
                         "Ferma il vecchio motore e riprova."
                     )
                 active_ctx = int(current_engine.get("n_ctx") or 0)
-                if active_ctx and active_ctx != context:
+                if active_ctx and active_ctx != options["context"]:
                     raise RuntimeError(
-                        f"Il motore già attivo usa Context {active_ctx}, ma hai richiesto {context}. "
+                        f"Il motore già attivo usa Context {active_ctx}, ma hai richiesto {options['context']}. "
                         "Premi Ferma, poi AVVIA GPTINA per applicare il nuovo Context."
                     )
                 active_slots = current_engine.get("total_slots")
@@ -680,31 +717,15 @@ class App:
                         f"Il motore già attivo usa {active_slots} slot; GPTina richiede 1 slot. "
                         "Premi Ferma, poi AVVIA GPTINA per applicare il nuovo parametro."
                     )
-                self.emit(
-                    "log",
-                    "Motore llama.cpp già attivo e compatibile. "
-                    "Per cambiare thread/context bisogna prima fermarlo."
+                raise RuntimeError(
+                    "Un motore è già attivo: i parametri thread/batch non sono verificabili da /props. "
+                    "Ferma la vecchia GPTina e riprova per applicare il profilo selezionato."
                 )
             else:
                 self.emit("log", f"Modello: {model.name}")
-                self.emit("log", f"CPU: {threads} thread · context {context} · max risposta {predict}")
+                self.emit("log", f"Profilo: {options}")
 
-                command = [
-                    str(ENGINE_EXE),
-                    "-m", str(model),
-                    "--host", "127.0.0.1",
-                    "--port", str(PORT_ENGINE),
-                    "-t", str(threads),
-                    "-tb", str(threads),
-                    "-c", str(context),
-                    "-np", "1",
-                    "-n", str(predict),
-                    "-b", "256",
-                    "-ub", "128",
-                    "-ngl", "0",
-                    "--flash-attn", "off",
-                    "--jinja",
-                ]
+                command = engine_command(model, options)
                 proc = self.spawn("engine", command, "engine.log")
                 self.wait_service(proc, "http://127.0.0.1:5001/health", 180, "Motore")
 
@@ -719,11 +740,13 @@ class App:
             )
             if total_slots is not None and int(total_slots) != 1:
                 raise RuntimeError(f"Il motore ha esposto {total_slots} slot invece di 1.")
-            if int(n_ctx or 0) != context:
+            if int(n_ctx or 0) != options["context"]:
                 self.emit(
                     "log",
-                    f"ATTENZIONE: context richiesto {context}, context esposto dal motore {n_ctx}.",
+                    f"ATTENZIONE: context richiesto {options['context']}, context esposto dal motore {n_ctx}.",
                 )
+
+            write_runtime_cfg(options["context"], options["predict"])
 
             self.emit("status", "Avvio memoria…")
             memory = service_probe(PORT_MEMORY, "GPTina Offline Memory", MEMORY_API_VERSION)
