@@ -25,3 +25,4 @@ offline-runtime/benchmarks/
 offline-runtime/.gptina_app_config.json
 offline-runtime/.gptina_runtime_config.json
 offline-runtime/GPTinaOffline.exe
+offline-runtime/semantic-cache/

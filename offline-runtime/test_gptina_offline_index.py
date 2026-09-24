@@ -60,6 +60,12 @@ class OfflineIndexTests(unittest.TestCase):
         self.assertEqual(visual[0]["path"], "rag/media-links/2026/09/32.json")
         self.assertEqual(visual[1]["path"], "rag/index/GPTINA_VISUAL_CHRONOLOGY.md")
 
+    def test_visual_number_expressed_as_numero_finds_the_same_record(self):
+        results, _, _ = index.search(
+            bridge.extract_search_queries("Quale ritratto avevamo collegato al numero 44?"),
+            2, "visual")
+        self.assertEqual(results[0]["path"], "rag/media-links/2026/09/44.json")
+
 
 if __name__ == "__main__":
     unittest.main()

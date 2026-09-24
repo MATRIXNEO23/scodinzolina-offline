@@ -12,15 +12,15 @@ import time
 from pathlib import Path
 from tkinter import (
     BOTH, END, LEFT, RIGHT, X, Y,
-    Button, Entry, Frame, Label, StringVar, Text, Tk, Toplevel,
+    BooleanVar, Button, Checkbutton, Entry, Frame, Label, StringVar, Text, Tk, Toplevel,
     filedialog, messagebox,
 )
 from tkinter import ttk
 from urllib.request import Request, urlopen
 
-APP_VERSION = "2.3"
-MEMORY_API_VERSION = "1.5"
-CHAT_API_VERSION = "1.11"
+APP_VERSION = "2.4"
+MEMORY_API_VERSION = "1.6"
+CHAT_API_VERSION = "1.12"
 
 SCRIPT_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 ENGINE_EXE = SCRIPT_DIR / "engine" / "llama-server.exe"
@@ -179,7 +179,7 @@ def save_cfg(cfg: dict) -> None:
 
 
 def write_runtime_cfg(context: int, max_tokens: int, options: dict | None = None,
-                      model: Path | None = None) -> None:
+                      model: Path | None = None, semantic_retrieval: bool = False) -> None:
     payload = {
         "engine_base": "http://127.0.0.1:5001",
         "memory_base": "http://127.0.0.1:8765",
@@ -187,6 +187,7 @@ def write_runtime_cfg(context: int, max_tokens: int, options: dict | None = None
         "max_tokens": max_tokens,
         "disable_thinking": True,
         "generation_timeout_seconds": 900,
+        "semantic_retrieval": semantic_retrieval,
     }
     if options is not None:
         payload["engine_options"] = {
@@ -621,6 +622,7 @@ class App:
         self.diagnostics: DiagnosticsWindow | None = None
         self.chat_window: ChatWindow | None = None
         self.monitor_busy = False
+        self.preparing_semantic = False
 
         cfg = load_cfg()
 
@@ -665,6 +667,12 @@ class App:
         Label(row, text="Micro-batch:").pack(side=LEFT)
         self.ubatch = StringVar(value=cfg["ubatch"])
         Entry(row, width=7, textvariable=self.ubatch).pack(side=LEFT, padx=(4, 14))
+
+        row = Frame(box)
+        row.pack(fill=X, pady=5)
+        self.semantic = BooleanVar(value=cfg.get("semantic_retrieval") == "True")
+        Checkbutton(row, text="Memoria semantica (prova)", variable=self.semantic).pack(side=LEFT)
+        Button(row, text="Prepara indice", command=self.prepare_semantic).pack(side=LEFT, padx=10)
 
         erow = Frame(box)
         erow.pack(fill=X, pady=(8, 4))
@@ -821,6 +829,35 @@ class App:
 
         threading.Thread(target=self._install_worker, daemon=True).start()
 
+    def prepare_semantic(self):
+        if self.preparing_semantic:
+            return
+        if any(proc.poll() is None for proc in self.procs.values()):
+            messagebox.showinfo("GPTina Offline", "Ferma GPTina prima di preparare l'indice.")
+            return
+        self.preparing_semantic = True
+        threading.Thread(target=self._prepare_semantic_worker, daemon=True).start()
+
+    def _prepare_semantic_worker(self):
+        self.emit("status", "Preparo memoria semantica… può richiedere alcuni minuti.")
+        self.emit("log", "Installo le dipendenze e preparo l'indice locale. La memoria resta in sola lettura.")
+        try:
+            for command in (
+                [sys.executable, "-m", "pip", "install", "-r", str(SCRIPT_DIR / "requirements-semantic.txt")],
+                [sys.executable, str(SCRIPT_DIR / "gptina_semantic_index.py")],
+            ):
+                proc = subprocess.run(command, cwd=str(SCRIPT_DIR), capture_output=True,
+                                      text=True, timeout=1200)
+                if proc.returncode:
+                    raise RuntimeError((proc.stderr or proc.stdout or "Errore sconosciuto")[-2000:])
+                self.emit("log", (proc.stdout or "").strip()[-1500:])
+            self.emit("status", "Indice pronto. Seleziona Memoria semantica e avvia GPTina.")
+            self.emit("log", "Indice semantico pronto; attivalo con la casella di prova.")
+        except Exception as exc:
+            self.emit("error", (f"Preparazione indice: {exc}", "Memoria"))
+        finally:
+            self.preparing_semantic = False
+
     def _install_worker(self):
         self.emit("status", "Installazione motore…")
         self.emit("log", "Scarico il runtime llama.cpp preparato per Sandy Bridge…")
@@ -900,18 +937,27 @@ class App:
         raise RuntimeError(f"{label} non è diventato pronto: {last_error}")
 
     def start(self):
+        if self.preparing_semantic:
+            messagebox.showinfo("GPTina Offline", "Attendi che la preparazione dell'indice finisca.")
+            return
         try:
             model, options = self.validate()
         except Exception as exc:
             messagebox.showerror("GPTina Offline", str(exc))
             return
 
-        save_cfg({"model_path": str(model), **{key: str(value) for key, value in options.items()}})
+        semantic_enabled = self.semantic.get()
+        if semantic_enabled and not all((SCRIPT_DIR / "semantic-cache" / name).is_file()
+                                        for name in ("index.json", "vectors.npz")):
+            messagebox.showerror("GPTina Offline", "Premi 'Prepara indice' prima di attivare la memoria semantica.")
+            return
+        save_cfg({"model_path": str(model), **{key: str(value) for key, value in options.items()},
+                  "semantic_retrieval": semantic_enabled})
 
         self.start_button.configure(state="disabled")
         threading.Thread(
             target=self._start_worker,
-            args=(model, options),
+            args=(model, options, semantic_enabled),
             daemon=True,
         ).start()
 
@@ -923,7 +969,7 @@ class App:
                 f"Dettaglio: {probe.get('error')}"
             )
 
-    def _start_worker(self, model: Path, options: dict[str, int]):
+    def _start_worker(self, model: Path, options: dict[str, int], semantic_enabled: bool):
         try:
             self.emit("status", "Controllo porte e servizi…")
 
@@ -990,7 +1036,8 @@ class App:
                     f"ATTENZIONE: context richiesto {options['context']}, context esposto dal motore {n_ctx}.",
                 )
 
-            write_runtime_cfg(options["context"], options["predict"], options, model)
+            write_runtime_cfg(options["context"], options["predict"], options, model,
+                              semantic_enabled)
 
             self.emit("status", "Avvio memoria…")
             memory = service_probe(PORT_MEMORY, "GPTina Offline Memory", MEMORY_API_VERSION)

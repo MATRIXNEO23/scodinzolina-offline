@@ -10,6 +10,25 @@ SPEC.loader.exec_module(mod)
 
 
 class MemoryServerTests(unittest.TestCase):
+    def test_semantic_can_rescue_a_paraphrase_without_displacing_exact_evidence(self):
+        unrelated = [{"path": "unrelated.md", "matched_queries": []}]
+        semantic = [{"path": "SHARED_LANGUAGE.md", "snippet": "Scodinzolina"}]
+        self.assertEqual(mod.combine_candidates(unrelated, semantic, 1)[0]["path"],
+                         "SHARED_LANGUAGE.md")
+        exact = [{"path": "correction.md", "matched_queries": ["la nostra canzone"]}]
+        self.assertEqual(mod.combine_candidates(exact, semantic, 1)[0]["path"],
+                         "correction.md")
+
+    def test_two_source_budget_retains_best_lexical_and_semantic_rescue(self):
+        lexical = [{"path": "exact.md", "score": 18, "matched_queries": []},
+                   {"path": "other.md", "matched_queries": []}]
+        semantic = [{"path": "paraphrase.md", "snippet": "relevant"}]
+        self.assertEqual([r["path"] for r in mod.combine_candidates(lexical, semantic, 2)],
+                         ["exact.md", "paraphrase.md"])
+        lexical[0]["score"] = 12
+        self.assertEqual(mod.combine_candidates(lexical, semantic, 2)[0]["path"],
+                         "paraphrase.md")
+
     def test_personal_song_recall_uses_corrected_source_not_invalidated_or_eval(self):
         bridge_spec = importlib.util.spec_from_file_location(
             "gptina_chat_bridge", HERE / "gptina_chat_bridge.py"

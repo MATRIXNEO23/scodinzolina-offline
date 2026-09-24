@@ -1,0 +1,17 @@
+name: Semantic retrieval probe
+on:
+  push:
+    branches: [semantic-probe]
+  pull_request:
+    branches: [main]
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install fastembed
+      - run: python offline-runtime/probe_semantic_retrieval.py
